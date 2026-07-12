@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from .base import LycorisBaseModule
+from .dropout import OutputRankDropout, SkipDropout
 from ..functional.loha import diff_weight as loha_diff_weight
 
 
@@ -122,8 +123,11 @@ class LohaModule(LycorisBaseModule):
                     .transpose(1, 0)
                 ).float()
 
-        if self.dropout:
-            print("[WARN]LoHa/LoKr haven't implemented normal dropout yet.")
+        # This algorithm uses rank dropout against the output for both the main and bypass paths.
+        self.rank_drop = (
+            SkipDropout() if rank_dropout == 0 else
+            OutputRankDropout(rank_dropout, rank_dropout_scale)
+        )
 
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
@@ -217,12 +221,6 @@ class LohaModule(LycorisBaseModule):
             )
         if shape is not None:
             weight = weight.reshape(shape)
-        if self.training and self.rank_dropout:
-            drop = (torch.rand(weight.size(0)) > self.rank_dropout).to(weight.dtype)
-            drop = drop.view(-1, *[1] * len(weight.shape[1:])).to(weight.device)
-            if self.rank_dropout_scale:
-                drop /= drop.mean()
-            weight *= drop
         return weight
 
     def get_diff_weight(self, multiplier=1, shape=None, device=None):
@@ -293,7 +291,10 @@ class LohaModule(LycorisBaseModule):
 
     def bypass_forward_diff(self, x, scale=1):
         diff_weight = self.get_weight(self.shape) * self.scalar * scale
-        return self.drop(self.op(x, diff_weight, **self.kw_dict))
+        weight = self.op(x, diff_weight, **self.kw_dict)
+        weight = self.drop(weight)
+        weight = self.rank_drop(weight)
+        return weight
 
     def bypass_forward(self, x, scale=1):
         return self.org_forward(x) + self.bypass_forward_diff(x, scale=scale)
@@ -319,4 +320,6 @@ class LohaModule(LycorisBaseModule):
 
         delta_weight = new_weight - base_weight
         delta = self.op(x, delta_weight, None, **self.kw_dict)
+        delta = self.drop(delta)
+        delta = self.rank_drop(delta)
         return base + delta

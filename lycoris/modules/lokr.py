@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base import LycorisBaseModule
+from .dropout import OutputRankDropout, SkipDropout
 from ..functional import factorization, rebuild_tucker
 from ..functional.lokr import make_kron
 from ..logging import logger
@@ -196,12 +197,11 @@ class LokrModule(LycorisBaseModule):
                     .transpose(1, 0)
                 ).float()
 
-        self.dropout = dropout
-        if dropout:
-            print("[WARN]LoHa/LoKr haven't implemented normal dropout yet.")
-        self.rank_dropout = rank_dropout
-        self.rank_dropout_scale = rank_dropout_scale
-        self.module_dropout = module_dropout
+        # This algorithm uses rank dropout against the output for both the main and bypass paths.
+        self.rank_drop = (
+            SkipDropout() if rank_dropout == 0 else
+            OutputRankDropout(rank_dropout, rank_dropout_scale)
+        )
 
         if isinstance(alpha, torch.Tensor):
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
@@ -372,12 +372,6 @@ class LokrModule(LycorisBaseModule):
         dtype = weight.dtype
         if shape is not None:
             weight = weight.view(shape)
-        if self.training and self.rank_dropout:
-            drop = (torch.rand(weight.size(0)) > self.rank_dropout).to(dtype)
-            drop = drop.view(-1, *[1] * len(weight.shape[1:]))
-            if self.rank_dropout_scale:
-                drop /= drop.mean()
-            weight *= drop
         return weight
 
     def get_diff_weight(self, multiplier=1, shape=None, device=None):
@@ -535,7 +529,9 @@ class LokrModule(LycorisBaseModule):
             hc = hc.transpose(-1, -2)
             h = hc.reshape(*hc.shape[:-2], -1)
 
-        return self.drop(h * scale * self.scalar)
+        h = self.drop(h)
+        h = self.rank_drop(h)
+        return h * scale * self.scalar
 
     def bypass_forward(self, x, scale=1):
         return self.org_forward(x) + self.bypass_forward_diff(x, scale=scale)
@@ -563,6 +559,8 @@ class LokrModule(LycorisBaseModule):
 
         delta_weight = new_weight - base_weight
         delta = self.op(x, delta_weight, None, **self.kw_dict)
+        delta = self.drop(delta)
+        delta = self.rank_drop(delta)
         return base + delta
 
 

@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base import LycorisBaseModule
+from .dropout import LoraRankDropout, SkipDropout
 from ..functional import tucker_weight_from_conv
 
 
@@ -123,6 +124,11 @@ class GLoRAModule(LycorisBaseModule):
         else:
             self.register_buffer("scalar", torch.tensor(1.0), persistent=False)
 
+        self.drop_rank = (
+            SkipDropout() if self.rank_dropout == 0 else
+            LoraRankDropout(self.rank_dropout, self.rank_dropout_scale)
+        )
+
         # same as microsoft's
         torch.nn.init.kaiming_uniform_(self.a1.weight, a=math.sqrt(5))
         torch.nn.init.kaiming_uniform_(self.b1.weight, a=math.sqrt(5))
@@ -209,33 +215,18 @@ class GLoRAModule(LycorisBaseModule):
 
     def _bypass_forward(self, x, scale=1, diff=False):
         scale = self.scale * scale
-        ax_mid = self.a2(x) * scale
-        bx_mid = self.b2(x) * scale
 
-        if self.rank_dropout and self.training:
-            drop_a = (
-                torch.rand(self.lora_dim, device=ax_mid.device) < self.rank_dropout
-            ).to(ax_mid.dtype)
-            drop_b = (
-                torch.rand(self.lora_dim, device=bx_mid.device) < self.rank_dropout
-            ).to(bx_mid.dtype)
-            if self.rank_dropout_scale:
-                drop_a /= drop_a.mean()
-                drop_b /= drop_b.mean()
-            if (dims := len(x.shape)) == 4:
-                drop_a = drop_a.view(1, -1, 1, 1)
-                drop_b = drop_b.view(1, -1, 1, 1)
-            else:
-                drop_a = drop_a.view(*[1] * (dims - 1), -1)
-                drop_b = drop_b.view(*[1] * (dims - 1), -1)
-            ax_mid = ax_mid * drop_a
-            bx_mid = bx_mid * drop_b
-        return (
-            self.org_forward(
-                (0 if diff else x) + self.drop(self.a1(ax_mid)) * self.scale
-            )
-            + self.drop(self.b1(bx_mid)) * self.scale
-        )
+        ax = self.a2(x) * scale
+        ax = self.drop_rank(ax)
+        ax = self.a1(ax)
+        ax = self.drop(ax) * self.scale
+
+        bx = self.b2(x) * scale
+        bx = self.drop_rank(bx)
+        bx = self.b1(bx)
+        bx = self.drop(bx) * self.scale
+
+        return self.org_forward((0 if diff else x) + ax) + bx
 
     def bypass_forward_diff(self, x, scale=1):
         return self._bypass_forward(x, scale=scale, diff=True)

@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base import LycorisBaseModule
+from .dropout import SkipDropout, NetworkDropout
 from ..functional import factorization
 from ..logging import logger
 
@@ -73,6 +74,13 @@ class DiagOFTModule(LycorisBaseModule):
         self.oft_blocks = nn.Parameter(
             torch.zeros(self.block_num, self.block_size, self.block_size)
         )
+
+        # This applies a standard dropout as its rank dropout at a specific moment during `get_weights`.
+        self.rank_drop = (
+            SkipDropout() if rank_dropout == 0 else
+            NetworkDropout(rank_dropout)
+        )
+
         if rescaled:
             self.rescale = nn.Parameter(
                 torch.ones(out_dim, *(1 for _ in range(org_module.weight.dim() - 1)))
