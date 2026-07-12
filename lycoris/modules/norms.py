@@ -48,8 +48,12 @@ class NormModule(LycorisBaseModule):
             return
 
         self.w_norm = nn.Parameter(torch.zeros(self.dim))
+
         if hasattr(org_module, "bias"):
             self.b_norm = nn.Parameter(torch.zeros(self.dim))
+        else:
+            self.b_norm = None
+
         if hasattr(org_module, "_norm"):
             self.org_norm = org_module._norm
         else:
@@ -69,20 +73,16 @@ class NormModule(LycorisBaseModule):
 
     def make_weight(self, scale=1, device=None):
         org_weight = self.org_module[0].weight.to(device, dtype=self.w_norm.dtype)
-        if hasattr(self.org_module[0], "bias"):
-            org_bias = self.org_module[0].bias.to(device, dtype=self.b_norm.dtype)
-        else:
-            org_bias = None
-        if self.rank_dropout and self.training:
-            drop = torch.empty(self.dim, device=device, dtype=self.w_norm.dtype).bernoulli_(1.0 - self.rank_dropout)
-            if self.rank_dropout_scale:
-                drop /= drop.mean()
-        else:
-            drop = 1
-        weight = self.w_norm.to(device) * drop * scale
-        if org_bias is not None:
-            bias = self.b_norm.to(device) * drop * scale
-        return org_weight + weight, org_bias + bias if org_bias is not None else None
+        weight = self.w_norm.to(device) * scale
+        return org_weight + weight
+
+    def make_bias(self, scale=1, device=None):
+        if self.b_norm is None:
+            return None
+
+        org_bias = self.org_module[0].bias.to(device, dtype=self.b_norm.dtype)
+        bias = self.b_norm.to(device) * scale
+        return org_bias + bias
 
     def get_diff_weight(self, multiplier=1, shape=None, device=None):
         if self.not_supported:
@@ -125,16 +125,24 @@ class NormModule(LycorisBaseModule):
 
         base = self.org_forward(x, *args, **kwargs)
 
-        weight, bias = self.make_weight(self.multiplier, x.device)
-        org_weight = self._current_weight().to(weight.device, dtype=weight.dtype)
-        delta_w = weight - org_weight
+        # Special handling of rank dropout.  Both weight and bias should have the same mask applied.
+        if self.rank_dropout and self.training:
+            drop = torch.empty(self.dim, device=x.device, dtype=self.w_norm.dtype).bernoulli_(1.0 - self.rank_dropout)
+            if self.rank_dropout_scale:
+                drop /= drop.mean()
+        else:
+            drop = 1
+
+        weight = self.make_weight(self.multiplier, x.device) * drop
+        org_weight = self._current_weight()
+        delta_w = weight - org_weight.to(weight.device, dtype=weight.dtype)
 
         delta_b = None
-        if bias is not None:
-            bias = bias.to(x.device)
+        if self.b_norm is not None:
+            bias = self.make_bias(self.multiplier, x.device) * drop
             org_bias = self._current_bias()
             if org_bias is not None:
-                delta_b = bias - org_bias.to(bias.device)
+                delta_b = bias - org_bias.to(bias.device, dtype=bias.dtype)
             else:
                 delta_b = bias
 
