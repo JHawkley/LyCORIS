@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils.parametrize as parametrize
 
-from .dropout import NetworkDropout, SkipDropout
+from .dropout import NetworkDropout, RankDropout, SkipDropout
 from ..utils.quant import QuantLinears, log_bypass, log_suspect
 
 try:
@@ -217,9 +217,7 @@ class LycorisBaseModule(ModuleCustomSD):
         # g(x) = (W + Brank_drop(A))X for LoCon(lora), rebuid
         # g(x) = (W + rank_drop(ΔW))X for any algo except LoCon(lora), rebuild
         self.drop = SkipDropout() if dropout == 0 else NetworkDropout(dropout)
-        # Rank dropout tends to be specialized per algo, so leave it to that module to
-        # initialize the correct method itself.
-        self.rank_drop = SkipDropout()
+        self.rank_drop = SkipDropout() if rank_dropout == 0 else RankDropout(rank_dropout, rank_dropout_scale)
 
         self.multiplier = multiplier
         self.org_forward = org_module.forward

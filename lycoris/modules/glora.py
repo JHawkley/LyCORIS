@@ -5,7 +5,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base import LycorisBaseModule
-from .dropout import LoraRankDropout, SkipDropout
 from ..functional import tucker_weight_from_conv
 
 
@@ -123,11 +122,6 @@ class GLoRAModule(LycorisBaseModule):
             self.scalar = nn.Parameter(torch.tensor(0.0))
         else:
             self.register_buffer("scalar", torch.tensor(1.0), persistent=False)
-
-        self.drop_rank = (
-            SkipDropout() if self.rank_dropout == 0 else
-            LoraRankDropout(self.rank_dropout, self.rank_dropout_scale)
-        )
 
         # same as microsoft's
         torch.nn.init.kaiming_uniform_(self.a1.weight, a=math.sqrt(5))

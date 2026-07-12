@@ -76,10 +76,7 @@ class DiagOFTModule(LycorisBaseModule):
         )
 
         # This applies a standard dropout as its rank dropout at a specific moment during `get_weights`.
-        self.rank_drop = (
-            SkipDropout() if rank_dropout == 0 else
-            NetworkDropout(rank_dropout)
-        )
+        self.rank_drop = SkipDropout() if rank_dropout == 0 else NetworkDropout(rank_dropout)
 
         if rescaled:
             self.rescale = nn.Parameter(

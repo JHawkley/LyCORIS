@@ -6,7 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base import LycorisBaseModule
-from .dropout import LoraRankDropout, OutputRankDropout, SkipDropout
 from ..functional.general import rebuild_tucker
 from ..logging import logger
 
@@ -119,15 +118,6 @@ class LoConModule(LycorisBaseModule):
                     .reshape(org_weight.shape[1], *[1] * self.dora_norm_dims)
                     .transpose(1, 0)
                 ).float()
-
-        # Bypass mode uses a slightly more efficient rank dropout.  Output dropout is
-        # used in the main path to simplify `use_tucker` and ensure that ranks are
-        # dropped after weight decomposition (if enabled).
-        self.rank_drop = (
-            SkipDropout() if rank_dropout == 0 else
-            LoraRankDropout(rank_dropout) if bypass_mode else
-            OutputRankDropout(rank_dropout, rank_dropout_scale)
-        )
 
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error

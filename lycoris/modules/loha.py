@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 
 from .base import LycorisBaseModule
-from .dropout import OutputRankDropout, SkipDropout
 from ..functional.loha import diff_weight as loha_diff_weight
 
 
@@ -122,12 +121,6 @@ class LohaModule(LycorisBaseModule):
                     .reshape(org_weight.shape[1], *[1] * self.dora_norm_dims)
                     .transpose(1, 0)
                 ).float()
-
-        # This algorithm uses rank dropout against the output for both the main and bypass paths.
-        self.rank_drop = (
-            SkipDropout() if rank_dropout == 0 else
-            OutputRankDropout(rank_dropout, rank_dropout_scale)
-        )
 
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error

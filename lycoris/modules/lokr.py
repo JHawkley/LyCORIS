@@ -6,7 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base import LycorisBaseModule
-from .dropout import OutputRankDropout, SkipDropout
 from ..functional import factorization, rebuild_tucker
 from ..functional.lokr import make_kron
 from ..logging import logger
@@ -196,12 +195,6 @@ class LokrModule(LycorisBaseModule):
                     .reshape(org_weight.shape[1], *[1] * self.dora_norm_dims)
                     .transpose(1, 0)
                 ).float()
-
-        # This algorithm uses rank dropout against the output for both the main and bypass paths.
-        self.rank_drop = (
-            SkipDropout() if rank_dropout == 0 else
-            OutputRankDropout(rank_dropout, rank_dropout_scale)
-        )
 
         if isinstance(alpha, torch.Tensor):
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
