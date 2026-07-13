@@ -211,12 +211,12 @@ class GLoRAModule(LycorisBaseModule):
         scale = self.scale * scale
 
         ax = self.a2(x) * scale
-        ax = self.drop_rank(ax)
+        ax = self.rank_drop(ax)
         ax = self.a1(ax)
         ax = self.drop(ax) * self.scale
 
         bx = self.b2(x) * scale
-        bx = self.drop_rank(bx)
+        bx = self.rank_drop(bx)
         bx = self.b1(bx)
         bx = self.drop(bx) * self.scale
 
