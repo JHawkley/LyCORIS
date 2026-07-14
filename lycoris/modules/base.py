@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils.parametrize as parametrize
 
-from .dropout import NetworkDropout, RankDropout, SkipDropout
+from .dropout import ConvDropout, NetworkDropout, RankDropout, SkipDropout
 from ..utils.quant import QuantLinears, log_bypass, log_suspect
 
 try:
@@ -114,7 +114,7 @@ class LycorisBaseModule(ModuleCustomSD):
             if base_layer is not None:
                 org_module = base_layer
 
-        self.module = type(org_module)
+        self.module: type[nn.Module] = type(org_module)
         if isinstance(org_module, nn.Linear):
             self.module_type = "linear"
             self.shape = (org_module.out_features, org_module.in_features)
@@ -210,13 +210,11 @@ class LycorisBaseModule(ModuleCustomSD):
         self.module_dropout = module_dropout
 
         ## Dropout things
-        # Since LoKr/LoHa/OFT/BOFT are hard to follow the rank_dropout definition from kohya
-        # We redefine the dropout procedure here.
-        # g(x) = WX + drop(Brank_drop(AX)) for LoCon(lora), bypass
-        # g(x) = WX + drop(ΔWX) for any algo except LoCon(lora), bypass
-        # g(x) = (W + Brank_drop(A))X for LoCon(lora), rebuid
-        # g(x) = (W + rank_drop(ΔW))X for any algo except LoCon(lora), rebuild
-        self.drop = SkipDropout() if dropout == 0 else NetworkDropout(dropout)
+        self.drop = (
+            SkipDropout() if dropout == 0 else
+            ConvDropout(dropout) if isinstance(org_module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)) else
+            NetworkDropout(dropout)
+        )
         self.rank_drop = SkipDropout() if rank_dropout == 0 else RankDropout(rank_dropout, rank_dropout_scale)
 
         self.multiplier = multiplier
