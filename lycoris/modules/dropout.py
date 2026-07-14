@@ -89,9 +89,8 @@ class NetworkDropout(nn.Dropout):
         super().__init__(p, False)
 
 class ConvDropout(nn.Module):
-    __constants__ = ["p", "scale"]
+    __constants__ = ["p"]
     p: float
-    scale: bool
 
     def __init__(self, p: float = 0.5) -> None:
         super().__init__()
@@ -102,7 +101,7 @@ class ConvDropout(nn.Module):
         self.p = p
 
     def extra_repr(self) -> str:
-        return f"p={self.p}, inplace=False"
+        return f"p={self.p}"
 
     def forward(self, input: Tensor) -> Tensor:
         return rank_dropout(input, self.p, False, True, self.training)
@@ -122,7 +121,7 @@ class RankDropout(nn.Module):
         self.scale = rank_dropout_scale
 
     def extra_repr(self) -> str:
-        return f"p={self.p}, inplace=False"
+        return f"p={self.p}, rank_dropout_scale={self.scale}"
 
     def forward(self, input: Tensor) -> Tensor:
         return rank_dropout(input, self.p, self.scale, False, self.training)

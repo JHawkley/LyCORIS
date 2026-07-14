@@ -210,12 +210,17 @@ class LycorisBaseModule(ModuleCustomSD):
         self.module_dropout = module_dropout
 
         ## Dropout things
+        # See `dropout.py` for an explanation for how dropout works differently
+        # from Kohya for most algorithms LyCORIS provides.
         self.drop = (
             SkipDropout() if dropout == 0 else
             ConvDropout(dropout) if isinstance(org_module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)) else
             NetworkDropout(dropout)
         )
-        self.rank_drop = SkipDropout() if rank_dropout == 0 else RankDropout(rank_dropout, rank_dropout_scale)
+        self.rank_drop = (
+            SkipDropout() if rank_dropout == 0 else
+            RankDropout(rank_dropout, rank_dropout_scale)
+        )
 
         self.multiplier = multiplier
         self.org_forward = org_module.forward
