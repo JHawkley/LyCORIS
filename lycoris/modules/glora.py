@@ -234,11 +234,13 @@ class GLoRAModule(LycorisBaseModule):
                 return self.org_forward(x, *args, **kwargs)
         if self.bypass_mode:
             return self.bypass_forward(x, self.multiplier)
-        else:
-            base = self.org_forward(x, *args, **kwargs)
-            base_weight = self._current_weight().to(x.device)
-            diff_weight = self.get_diff_weight(multiplier=self.multiplier)[0].to(
-                base_weight.device, dtype=base_weight.dtype
-            )
-            delta = self.op(x, diff_weight, None, **self.kw_dict)
-            return base + delta
+
+        base = self.org_forward(x, *args, **kwargs)
+        base_weight = self._current_weight().to(x.device)
+        diff_weight = self.get_diff_weight(multiplier=self.multiplier)[0].to(
+            base_weight.device, dtype=base_weight.dtype
+        )
+        delta = self.op(x, diff_weight, None, **self.kw_dict)
+        delta = self.drop(delta)
+        delta = self.rank_drop(delta)
+        return base + delta
