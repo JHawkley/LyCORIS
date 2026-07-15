@@ -75,7 +75,11 @@ class DiagOFTModule(LycorisBaseModule):
             torch.zeros(self.block_num, self.block_size, self.block_size)
         )
 
-        # This applies a standard dropout as its rank dropout at a specific moment during `get_weights`.
+        # Dropout in this module appears to have a discontinuity between the main
+        # and bypass paths.  I'm not going to fix this, since I don't understand
+        # this algorithm very well, but I will make sure it still functions the
+        # way it did before the dropout refactor.
+        self.drop = SkipDropout() if dropout == 0 else NetworkDropout(dropout)
         self.rank_drop = SkipDropout() if rank_dropout == 0 else NetworkDropout(rank_dropout)
 
         if rescaled:
