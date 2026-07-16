@@ -187,7 +187,7 @@ class FullModule(LycorisBaseModule):
             diff = diff * multiplier
             if diff_b is not None:
                 diff_b = diff_b * multiplier
-        return diff * multiplier, diff_b
+        return diff, diff_b
 
     def get_merged_weight(self, multiplier=1, shape=None, device=None):
         weight, bias = self.make_weight(multiplier, device)
