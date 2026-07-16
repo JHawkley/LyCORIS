@@ -71,24 +71,19 @@ class NormModule(LycorisBaseModule):
         if b_norm is not None:
             module.b_norm.copy_(b_norm)
         return module
-
+    
     def make_weight(self, scale=1, device=None):
         # Unlike many other algorithms, this function returns the combined weight
-        # instead of the diff weight.  Use `get_diff_weight` if only the difference
-        # is needed.
-        org_weight = self.org_module[0].weight.to(device, dtype=self.w_norm.dtype)
-        weight = self.w_norm.to(device) * scale
-        return org_weight + weight
+        # and bias instead of the difference from the base model.  Use `get_diff_weight`
+        # if only the difference is needed.
+        diff_w, diff_b = self.get_diff_weight(scale, device=device)
+        org_weight = self.org_module[0].weight.to(device, dtype=diff_w.dtype)
 
-    def make_bias(self, scale=1, device=None):
-        # This returns the combined bias.  Use `get_diff_weight` if only the
-        # difference is needed.
-        if self.b_norm is None:
-            return None
+        if diff_b is None:
+            return org_weight + diff_w, None
 
-        org_bias = self.org_module[0].bias.to(device, dtype=self.b_norm.dtype)
-        bias = self.b_norm.to(device) * scale
-        return org_bias + bias
+        org_bias = self.org_module[0].bias.to(device, dtype=diff_b.dtype)
+        return org_weight + diff_w, org_bias + diff_b
 
     def get_diff_weight(self, multiplier=1, shape=None, device=None):
         if self.not_supported:
