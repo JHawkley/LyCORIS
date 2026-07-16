@@ -34,6 +34,34 @@ def rank_dropout(
         drop /= drop.mean()
     return input * drop
 
+def rank_dropout_with_bias(
+    weight: Tensor,
+    bias: Tensor | None,
+    p: float = 0.5,
+    scale: bool = False,
+    training: bool = True,
+) -> tuple[Tensor, Tensor | None]:
+    """Applies the same dropout mask to both `weight` and `bias`."""
+
+    if p < 0.0 or p > 1.0:
+        raise ValueError(
+            f"dropout probability has to be between 0 and 1, but got {p}"
+        )
+
+    if not training or p == 0.0:
+        return weight, bias
+
+    mask = torch.empty(weight.shape[0], device=weight.device, dtype=weight.dtype).bernoulli_(
+        1.0 - p
+    )
+    if scale:
+        mask = mask / mask.mean()
+
+    weight = weight * mask.view(-1, *[1] * (weight.ndim - 1))
+    if bias is not None:
+        bias = bias * mask
+    return weight, bias
+
 
 class SkipDropout(nn.Identity):
     def __init__(self) -> None:

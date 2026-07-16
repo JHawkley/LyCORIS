@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from .base import LycorisBaseModule
+from .dropout import rank_dropout_with_bias
 from ..logging import warning_once
 
 
@@ -72,11 +73,16 @@ class NormModule(LycorisBaseModule):
         return module
 
     def make_weight(self, scale=1, device=None):
+        # Unlike many other algorithms, this function returns the combined weight
+        # instead of the diff weight.  Use `get_diff_weight` if only the difference
+        # is needed.
         org_weight = self.org_module[0].weight.to(device, dtype=self.w_norm.dtype)
         weight = self.w_norm.to(device) * scale
         return org_weight + weight
 
     def make_bias(self, scale=1, device=None):
+        # This returns the combined bias.  Use `get_diff_weight` if only the
+        # difference is needed.
         if self.b_norm is None:
             return None
 
@@ -125,26 +131,13 @@ class NormModule(LycorisBaseModule):
 
         base = self.org_forward(x, *args, **kwargs)
 
-        # Special handling of rank dropout.  Both weight and bias should have the same mask applied.
-        if self.rank_dropout and self.training:
-            drop = torch.empty(self.dim, device=x.device, dtype=self.w_norm.dtype).bernoulli_(1.0 - self.rank_dropout)
-            if self.rank_dropout_scale:
-                drop /= drop.mean()
-        else:
-            drop = 1
-
-        weight = self.make_weight(self.multiplier, x.device) * drop
-        org_weight = self._current_weight()
-        delta_w = weight - org_weight.to(weight.device, dtype=weight.dtype)
-
-        delta_b = None
-        if self.b_norm is not None:
-            bias = self.make_bias(self.multiplier, x.device) * drop
-            org_bias = self._current_bias()
-            if org_bias is not None:
-                delta_b = bias - org_bias.to(bias.device, dtype=bias.dtype)
-            else:
-                delta_b = bias
+        delta_w, delta_b = self.get_diff_weight(self.multiplier, device=x.device)
+        delta_w, delta_b = rank_dropout_with_bias(
+            delta_w, delta_b,
+            p=self.rank_dropout,
+            scale=self.rank_dropout_scale,
+            training=self.training,
+        )
 
         if self.org_norm is not None:
             normed = self.org_norm(x)

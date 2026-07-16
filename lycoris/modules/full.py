@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from .base import LycorisBaseModule
+from .dropout import rank_dropout_with_bias
 from ..logging import logger
 
 
@@ -204,19 +205,12 @@ class FullModule(LycorisBaseModule):
         delta_weight, delta_bias = self.get_diff_weight(self.multiplier, device=x.device)
         delta_weight = delta_weight.to(x.dtype)
 
-        # Apply dropout to the delta weights.
-        # Both weight and bias must use the same rank-dropout mask so that
-        # dropped output channels are fully zeroed (matching NormModule behavior).
-        if self.rank_dropout and self.training:
-            drop = torch.empty(self.dim, device=x.device, dtype=delta_weight.dtype).bernoulli_(
-                1.0 - self.rank_dropout
-            )
-            if self.rank_dropout_scale:
-                drop /= drop.mean()
-            drop = drop.view(-1, *[1] * (delta_weight.dim() - 1))
-            delta_weight = delta_weight * drop
-            if delta_bias is not None:
-                delta_bias = delta_bias * drop.squeeze()
+        delta_weight, delta_bias = rank_dropout_with_bias(
+            delta_weight, delta_bias,
+            p=self.rank_dropout,
+            scale=self.rank_dropout_scale,
+            training=self.training,
+        )
 
         if self.dropout and self.training:
             delta_weight = self.drop(delta_weight)
