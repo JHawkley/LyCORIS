@@ -16,7 +16,8 @@ def rank_dropout(
 ) -> Tensor:
     if has_torch_function_unary(input):
         return handle_torch_function(
-            rank_dropout, (input,), input, p=p, training=training
+            rank_dropout, (input,), input,
+            p=p, rank_dropout_scale=rank_dropout_scale, training=training
         )
 
     if p < 0.0 or p > 1.0:
