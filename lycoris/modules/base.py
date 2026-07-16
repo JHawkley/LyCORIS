@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils.parametrize as parametrize
 
-from .dropout import ConvDropout, NetworkDropout, RankDropout, SkipDropout
+from .dropout import NetworkDropout, RankDropout, SkipDropout
 from ..utils.quant import QuantLinears, log_bypass, log_suspect
 
 try:
@@ -209,12 +209,8 @@ class LycorisBaseModule(ModuleCustomSD):
         self.rank_dropout_scale = rank_dropout_scale
         self.module_dropout = module_dropout
 
-        ## Dropout things
-        # See `dropout.py` for an explanation for how dropout works differently
-        # from Kohya for most algorithms LyCORIS provides.
         self.drop = (
             SkipDropout() if dropout == 0 else
-            ConvDropout(dropout) if isinstance(org_module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)) else
             NetworkDropout(dropout)
         )
         self.rank_drop = (

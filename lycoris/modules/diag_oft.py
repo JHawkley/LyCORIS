@@ -219,7 +219,7 @@ class DiagOFTModule(LycorisBaseModule):
         new_weight = new_weight.to(base_weight.dtype)
 
         delta_weight = new_weight - base_weight
+        delta_weight = self.drop(delta_weight)
+        delta_weight = self.rank_drop(delta_weight)
         delta = self.op(x, weight=delta_weight, bias=None, **self.kw_dict)
-        delta = self.drop(delta)
-        delta = self.rank_drop(delta)
         return base + delta

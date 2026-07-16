@@ -211,14 +211,14 @@ class GLoRAModule(LycorisBaseModule):
         scale = self.scale * scale
 
         ax = self.a2(x) * scale
-        ax = self.rank_drop(ax)
         ax = self.a1(ax)
-        ax = self.drop(ax) * self.scale
+        ax = self.drop(ax)
+        ax = self.rank_drop(ax) * self.scale
 
         bx = self.b2(x) * scale
-        bx = self.rank_drop(bx)
         bx = self.b1(bx)
-        bx = self.drop(bx) * self.scale
+        bx = self.drop(bx)
+        bx = self.rank_drop(bx) * self.scale
 
         return self.org_forward((0 if diff else x) + ax) + bx
 
@@ -240,7 +240,7 @@ class GLoRAModule(LycorisBaseModule):
         diff_weight = self.get_diff_weight(multiplier=self.multiplier)[0].to(
             base_weight.device, dtype=base_weight.dtype
         )
+        diff_weight = self.drop(diff_weight)
+        diff_weight = self.rank_drop(diff_weight)
         delta = self.op(x, diff_weight, None, **self.kw_dict)
-        delta = self.drop(delta)
-        delta = self.rank_drop(delta)
         return base + delta

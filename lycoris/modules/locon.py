@@ -262,10 +262,10 @@ class LoConModule(LycorisBaseModule):
         weights = self.lora_down(x)
         if self.tucker:
             weights = self.lora_mid(weights)
-
-        weights = self.rank_drop(weights)
         weights = self.lora_up(weights)
+
         weights = self.drop(weights)
+        weights = self.rank_drop(weights)
         return weights * self.scalar * self.scale * scale
 
     def bypass_forward(self, x, scale=1):
@@ -293,7 +293,7 @@ class LoConModule(LycorisBaseModule):
             new_weight = base_weight + diff_weight * self.multiplier
 
         delta_weight = new_weight - base_weight
+        delta_weight = self.drop(delta_weight)
+        delta_weight = self.rank_drop(delta_weight)
         delta = self.op(x, delta_weight, None, **self.kw_dict)
-        delta = self.drop(delta)
-        delta = self.rank_drop(delta)
         return base + delta

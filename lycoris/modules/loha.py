@@ -284,10 +284,9 @@ class LohaModule(LycorisBaseModule):
 
     def bypass_forward_diff(self, x, scale=1):
         diff_weight = self.get_weight(self.shape) * self.scalar * scale
-        weight = self.op(x, diff_weight, **self.kw_dict)
-        weight = self.drop(weight)
-        weight = self.rank_drop(weight)
-        return weight
+        diff_weight = self.drop(diff_weight)
+        diff_weight = self.rank_drop(diff_weight)
+        return self.op(x, diff_weight, **self.kw_dict)
 
     def bypass_forward(self, x, scale=1):
         return self.org_forward(x) + self.bypass_forward_diff(x, scale=scale)
@@ -312,7 +311,7 @@ class LohaModule(LycorisBaseModule):
             new_weight = base_weight + diff_weight * self.multiplier
 
         delta_weight = new_weight - base_weight
+        delta_weight = self.drop(delta_weight)
+        delta_weight = self.rank_drop(delta_weight)
         delta = self.op(x, delta_weight, None, **self.kw_dict)
-        delta = self.drop(delta)
-        delta = self.rank_drop(delta)
         return base + delta
