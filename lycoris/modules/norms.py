@@ -73,7 +73,7 @@ class NormModule(LycorisBaseModule):
         return module
     
     def make_weight(self, scale=1, device=None):
-        # Unlike many other algorithms, this function returns the combined weight
+        # Unlike many other algorithms, this function returns the merged weight
         # and bias instead of the difference from the base model.  Use `get_diff_weight`
         # if only the difference is needed.
         diff_w, diff_b = self.get_diff_weight(scale, device=device)

@@ -149,7 +149,7 @@ class FullModule(LycorisBaseModule):
             state_dict[f"{prefix}bias"] = diff_bias + self.bias.data.to(diff_bias)
 
     def make_weight(self, scale=1, device=None):
-        # Unlike many other algorithms, this function returns the combined weight
+        # Unlike many other algorithms, this function returns the merged weight
         # instead of the diff weight.  Use `get_diff_weight` if only the difference
         # is needed.
         diff_w, diff_b = self.get_diff_weight(scale, device=device)
