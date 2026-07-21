@@ -81,11 +81,6 @@ class NormModule(LycorisBaseModule):
                 drop /= drop.mean()
         else:
             drop = 1
-        drop = (
-            torch.rand(self.dim, device=device) < self.rank_dropout
-            if self.rank_dropout and self.training
-            else 1
-        )
         weight = self.w_norm.to(device) * drop * scale
         if org_bias is not None:
             bias = self.b_norm.to(device) * drop * scale
