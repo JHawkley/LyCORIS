@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from .base import LycorisBaseModule
+from .dropout import rank_dropout_with_bias
 from ..logging import warning_once
 
 
@@ -48,8 +49,12 @@ class NormModule(LycorisBaseModule):
             return
 
         self.w_norm = nn.Parameter(torch.zeros(self.dim))
+
         if hasattr(org_module, "bias"):
             self.b_norm = nn.Parameter(torch.zeros(self.dim))
+        else:
+            self.b_norm = None
+
         if hasattr(org_module, "_norm"):
             self.org_norm = org_module._norm
         else:
@@ -66,25 +71,19 @@ class NormModule(LycorisBaseModule):
         if b_norm is not None:
             module.b_norm.copy_(b_norm)
         return module
-
+    
     def make_weight(self, scale=1, device=None):
-        org_weight = self.org_module[0].weight.to(device, dtype=self.w_norm.dtype)
-        if hasattr(self.org_module[0], "bias"):
-            org_bias = self.org_module[0].bias.to(device, dtype=self.b_norm.dtype)
-        else:
-            org_bias = None
-        if self.rank_dropout and self.training:
-            drop = (torch.rand(self.dim, device=device) < self.rank_dropout).to(
-                self.w_norm.device
-            )
-            if self.rank_dropout_scale:
-                drop /= drop.mean()
-        else:
-            drop = 1
-        weight = self.w_norm.to(device) * drop * scale
-        if org_bias is not None:
-            bias = self.b_norm.to(device) * drop * scale
-        return org_weight + weight, org_bias + bias if org_bias is not None else None
+        # Unlike many other algorithms, this function returns the merged weight
+        # and bias instead of the difference from the base model.  Use `get_diff_weight`
+        # if only the difference is needed.
+        diff_w, diff_b = self.get_diff_weight(scale, device=device)
+        org_weight = self.org_module[0].weight.to(device, dtype=diff_w.dtype)
+
+        if diff_b is None:
+            return org_weight + diff_w, None
+
+        org_bias = self.org_module[0].bias.to(device, dtype=diff_b.dtype)
+        return org_weight + diff_w, org_bias + diff_b
 
     def get_diff_weight(self, multiplier=1, shape=None, device=None):
         if self.not_supported:
@@ -127,18 +126,13 @@ class NormModule(LycorisBaseModule):
 
         base = self.org_forward(x, *args, **kwargs)
 
-        weight, bias = self.make_weight(self.multiplier, x.device)
-        org_weight = self._current_weight().to(weight.device, dtype=weight.dtype)
-        delta_w = weight - org_weight
-
-        delta_b = None
-        if bias is not None:
-            bias = bias.to(x.device)
-            org_bias = self._current_bias()
-            if org_bias is not None:
-                delta_b = bias - org_bias.to(bias.device)
-            else:
-                delta_b = bias
+        delta_w, delta_b = self.get_diff_weight(self.multiplier, device=x.device)
+        delta_w, delta_b = rank_dropout_with_bias(
+            delta_w, delta_b,
+            p=self.rank_dropout,
+            scale=self.rank_dropout_scale,
+            training=self.training,
+        )
 
         if self.org_norm is not None:
             normed = self.org_norm(x)

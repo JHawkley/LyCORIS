@@ -122,9 +122,6 @@ class LohaModule(LycorisBaseModule):
                     .transpose(1, 0)
                 ).float()
 
-        if self.dropout:
-            print("[WARN]LoHa/LoKr haven't implemented normal dropout yet.")
-
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
         alpha = lora_dim if alpha is None or alpha == 0 else alpha
@@ -217,12 +214,6 @@ class LohaModule(LycorisBaseModule):
             )
         if shape is not None:
             weight = weight.reshape(shape)
-        if self.training and self.rank_dropout:
-            drop = (torch.rand(weight.size(0)) > self.rank_dropout).to(weight.dtype)
-            drop = drop.view(-1, *[1] * len(weight.shape[1:])).to(weight.device)
-            if self.rank_dropout_scale:
-                drop /= drop.mean()
-            weight *= drop
         return weight
 
     def get_diff_weight(self, multiplier=1, shape=None, device=None):
@@ -293,7 +284,9 @@ class LohaModule(LycorisBaseModule):
 
     def bypass_forward_diff(self, x, scale=1):
         diff_weight = self.get_weight(self.shape) * self.scalar * scale
-        return self.drop(self.op(x, diff_weight, **self.kw_dict))
+        diff_weight = self.drop(diff_weight)
+        diff_weight = self.rank_drop(diff_weight)
+        return self.op(x, diff_weight, **self.kw_dict)
 
     def bypass_forward(self, x, scale=1):
         return self.org_forward(x) + self.bypass_forward_diff(x, scale=scale)
@@ -318,5 +311,7 @@ class LohaModule(LycorisBaseModule):
             new_weight = base_weight + diff_weight * self.multiplier
 
         delta_weight = new_weight - base_weight
+        delta_weight = self.drop(delta_weight)
+        delta_weight = self.rank_drop(delta_weight)
         delta = self.op(x, delta_weight, None, **self.kw_dict)
         return base + delta

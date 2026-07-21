@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from .base import LycorisBaseModule
+from .dropout import rank_dropout_with_bias
 from ..logging import logger
 
 
@@ -148,21 +149,15 @@ class FullModule(LycorisBaseModule):
             state_dict[f"{prefix}bias"] = diff_bias + self.bias.data.to(diff_bias)
 
     def make_weight(self, scale=1, device=None):
-        drop = (
-            torch.rand(self.dim, device=device) > self.rank_dropout
-            if self.rank_dropout and self.training
-            else 1
-        )
-        if drop != 1 or scale != 1 or self.is_diff:
-            diff_w, diff_b = self.get_diff_weight(scale, device=device)
-            weight = self.org_weight + diff_w * drop
-            if self.org_bias is not None:
-                bias = self.org_bias + diff_b * drop
-            else:
-                bias = None
+        # Unlike many other algorithms, this function returns the merged weight
+        # instead of the diff weight.  Use `get_diff_weight` if only the difference
+        # is needed.
+        diff_w, diff_b = self.get_diff_weight(scale, device=device)
+        weight = self.org_weight + diff_w
+        if self.org_bias is not None and diff_b is not None:
+            bias = self.org_bias + diff_b
         else:
-            weight = self.weight
-            bias = self.bias
+            bias = None if self.org_bias is None else diff_b
         return weight, bias
 
     def get_diff_weight(self, multiplier=1, shape=None, device=None):
@@ -171,6 +166,7 @@ class FullModule(LycorisBaseModule):
             if self.bias is not None:
                 diff_b = self.bias * multiplier
             return self.weight * multiplier, diff_b
+
         org_weight = self.org_module[0].weight.to(device, dtype=self.weight.dtype)
         diff = self.weight.to(device) - org_weight
         diff_b = None
@@ -206,19 +202,23 @@ class FullModule(LycorisBaseModule):
             return self.org_forward(x, *args, **kwargs)
 
         base = self.org_forward(x, *args, **kwargs)
-        weight, bias = self.make_weight(self.multiplier, x.device)
+        delta_weight, delta_bias = self.get_diff_weight(self.multiplier, device=x.device)
+        delta_weight = delta_weight.to(x.dtype)
 
-        base_weight = self._current_weight().to(weight.device)
-        delta_weight = weight - base_weight
+        delta_weight, delta_bias = rank_dropout_with_bias(
+            delta_weight, delta_bias,
+            p=self.rank_dropout,
+            scale=self.rank_dropout_scale,
+            training=self.training,
+        )
 
-        org_bias = self._current_bias()
-        if bias is not None:
-            bias = bias.to(x.device)
+        if self.dropout and self.training:
+            delta_weight = self.drop(delta_weight)
+            if delta_bias is not None:
+                delta_bias = self.drop(delta_bias)
 
-        if org_bias is not None and bias is not None:
-            delta_bias = bias - org_bias.to(bias.device)
-        else:
-            delta_bias = bias
+        if delta_bias is not None:
+            delta_bias = delta_bias.to(x.device, dtype=x.dtype)
 
         delta = self.op(x, weight=delta_weight, bias=delta_bias, **self.kw_dict)
         return base + delta

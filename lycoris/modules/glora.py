@@ -208,33 +208,17 @@ class GLoRAModule(LycorisBaseModule):
         return self.org_weight + diff_w, None
 
     def _bypass_forward(self, x, scale=1, diff=False):
-        ax_mid = self.a2(x)
-        bx_mid = self.b2(x)
+        ax = self.a2(x)
+        ax = self.a1(ax)
+        ax = self.drop(ax)
+        ax = self.rank_drop(ax) * self.scale * self.scalar * scale
 
-        if self.rank_dropout and self.training:
-            drop_a = (
-                torch.rand(self.lora_dim, device=ax_mid.device) < self.rank_dropout
-            ).to(ax_mid.dtype)
-            drop_b = (
-                torch.rand(self.lora_dim, device=bx_mid.device) < self.rank_dropout
-            ).to(bx_mid.dtype)
-            if self.rank_dropout_scale:
-                drop_a /= drop_a.mean()
-                drop_b /= drop_b.mean()
-            if (dims := len(x.shape)) == 4:
-                drop_a = drop_a.view(1, -1, 1, 1)
-                drop_b = drop_b.view(1, -1, 1, 1)
-            else:
-                drop_a = drop_a.view(*[1] * (dims - 1), -1)
-                drop_b = drop_b.view(*[1] * (dims - 1), -1)
-            ax_mid = ax_mid * drop_a
-            bx_mid = bx_mid * drop_b
-        return (
-            self.org_forward(
-                (0 if diff else x) + self.drop(self.a1(ax_mid)) * self.scale * self.scalar * scale
-            )
-            + self.drop(self.b1(bx_mid)) * self.scale * self.scalar * scale
-        )
+        bx = self.b2(x)
+        bx = self.b1(bx)
+        bx = self.drop(bx)
+        bx = self.rank_drop(bx) * self.scale * self.scalar * scale
+
+        return self.org_forward((0 if diff else x) + ax) + bx
 
     def bypass_forward_diff(self, x, scale=1):
         return self._bypass_forward(x, scale=scale, diff=True)
@@ -248,11 +232,13 @@ class GLoRAModule(LycorisBaseModule):
                 return self.org_forward(x, *args, **kwargs)
         if self.bypass_mode:
             return self.bypass_forward(x, self.multiplier)
-        else:
-            base = self.org_forward(x, *args, **kwargs)
-            base_weight = self._current_weight().to(x.device)
-            diff_weight = self.get_diff_weight(multiplier=self.multiplier)[0].to(
-                base_weight.device, dtype=base_weight.dtype
-            )
-            delta = self.op(x, diff_weight, None, **self.kw_dict)
-            return base + delta
+
+        base = self.org_forward(x, *args, **kwargs)
+        base_weight = self._current_weight().to(x.device)
+        diff_weight = self.get_diff_weight(multiplier=self.multiplier)[0].to(
+            base_weight.device, dtype=base_weight.dtype
+        )
+        diff_weight = self.drop(diff_weight)
+        diff_weight = self.rank_drop(diff_weight)
+        delta = self.op(x, diff_weight, None, **self.kw_dict)
+        return base + delta

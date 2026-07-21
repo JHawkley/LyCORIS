@@ -73,6 +73,7 @@ class DiagOFTModule(LycorisBaseModule):
         self.oft_blocks = nn.Parameter(
             torch.zeros(self.block_num, self.block_size, self.block_size)
         )
+
         if rescaled:
             self.rescale = nn.Parameter(
                 torch.ones(out_dim, *(1 for _ in range(org_module.weight.dim() - 1)))
@@ -136,7 +137,7 @@ class DiagOFTModule(LycorisBaseModule):
         # Init R=0, so add I on it to ensure the output of step0 is original model output
         weight = torch.einsum(
             "k n m, k n ... -> k m ...",
-            self.rank_drop(r * scale) - scale * self.I + (0 if diff else self.I),
+            r * scale - scale * self.I + (0 if diff else self.I),
             org_weight,
         ).view(-1, *shape)
         if self.rescaled:
@@ -176,20 +177,20 @@ class DiagOFTModule(LycorisBaseModule):
         if self.op in {F.conv2d, F.conv1d, F.conv3d}:
             org_out = org_out.transpose(1, -1)
         *shape, _ = org_out.shape
-        org_out = org_out.view(*shape, self.block_num, self.block_size)
-        mask = neg_mask = 1
-        if self.dropout != 0 and self.training:
-            mask = torch.ones_like(org_out)
-            mask = self.drop(mask)
-            neg_mask = torch.max(mask) - mask
+        org_blocked = org_out.view(*shape, self.block_num, self.block_size)
+
         oft_out = torch.einsum(
             "k n m, ... k n -> ... k m",
-            r * scale * mask + (1 - scale) * self.I * neg_mask,
-            org_out,
+            r * scale + (1 - scale) * self.I,
+            org_blocked,
         )
-        if diff:
-            out = out - org_out
-        out = oft_out.view(*shape, -1)
+
+        delta = (oft_out - org_blocked).reshape(*shape, -1)
+        delta = self.drop(delta)
+        delta = self.rank_drop(delta)
+
+        out = delta if diff else org_out + delta
+
         if self.rescaled:
             out = self.rescale.transpose(-1, 0) * out
             out = out + (self.rescale.transpose(-1, 0) - 1) * org_out
@@ -211,11 +212,14 @@ class DiagOFTModule(LycorisBaseModule):
 
         if self.bypass_mode:
             return self.bypass_forward(x, scale)
-        else:
-            base = self.org_forward(x, *args, **kwargs)
-            new_weight = self.make_weight(scale, x.device)
-            base_weight = self._current_weight().to(new_weight.device)
-            new_weight = new_weight.to(base_weight.dtype)
-            delta_weight = new_weight - base_weight
-            delta = self.op(x, weight=delta_weight, bias=None, **self.kw_dict)
-            return base + delta
+
+        base = self.org_forward(x, *args, **kwargs)
+        new_weight = self.make_weight(scale, x.device)
+        base_weight = self._current_weight().to(new_weight.device)
+        new_weight = new_weight.to(base_weight.dtype)
+
+        delta_weight = new_weight - base_weight
+        delta_weight = self.drop(delta_weight)
+        delta_weight = self.rank_drop(delta_weight)
+        delta = self.op(x, weight=delta_weight, bias=None, **self.kw_dict)
+        return base + delta

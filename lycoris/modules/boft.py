@@ -231,8 +231,14 @@ class ButterflyOFTModule(LycorisBaseModule):
         if self.op in {F.conv2d, F.conv1d, F.conv3d}:
             inp = inp.transpose(1, -1)
 
-        if diff:
-            inp = inp - org
+        # We can take a fast-path if no dropout is being applied.
+        if self.dropout == 0 and self.rank_dropout == 0:
+            return inp - org if diff else inp
+
+        delta = inp - org
+        delta = self.drop(delta)
+        delta = self.rank_drop(delta)
+        inp = delta if diff else org + delta
         return inp
 
     def bypass_forward_diff(self, x, scale=1):
@@ -249,11 +255,14 @@ class ButterflyOFTModule(LycorisBaseModule):
 
         if self.bypass_mode:
             return self.bypass_forward(x, scale)
-        else:
-            base = self.org_forward(x, *args, **kwargs)
-            new_weight = self.make_weight(scale, x.device)
-            base_weight = self._current_weight().to(new_weight.device)
-            new_weight = new_weight.to(base_weight.dtype)
-            delta_weight = new_weight - base_weight
-            delta = self.op(x, weight=delta_weight, bias=None, **self.kw_dict)
-            return base + delta
+
+        base = self.org_forward(x, *args, **kwargs)
+        new_weight = self.make_weight(scale, x.device)
+        base_weight = self._current_weight().to(new_weight.device)
+        new_weight = new_weight.to(base_weight.dtype)
+
+        delta_weight = new_weight - base_weight
+        delta_weight = self.drop(delta_weight)
+        delta_weight = self.rank_drop(delta_weight)
+        delta = self.op(x, weight=delta_weight, bias=None, **self.kw_dict)
+        return base + delta

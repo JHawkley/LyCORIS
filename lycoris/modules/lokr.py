@@ -196,13 +196,6 @@ class LokrModule(LycorisBaseModule):
                     .transpose(1, 0)
                 ).float()
 
-        self.dropout = dropout
-        if dropout:
-            print("[WARN]LoHa/LoKr haven't implemented normal dropout yet.")
-        self.rank_dropout = rank_dropout
-        self.rank_dropout_scale = rank_dropout_scale
-        self.module_dropout = module_dropout
-
         if isinstance(alpha, torch.Tensor):
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
         alpha = lora_dim if alpha is None or alpha == 0 else alpha
@@ -372,12 +365,6 @@ class LokrModule(LycorisBaseModule):
         dtype = weight.dtype
         if shape is not None:
             weight = weight.view(shape)
-        if self.training and self.rank_dropout:
-            drop = (torch.rand(weight.size(0)) > self.rank_dropout).to(dtype)
-            drop = drop.view(-1, *[1] * len(weight.shape[1:]))
-            if self.rank_dropout_scale:
-                drop /= drop.mean()
-            weight *= drop
         return weight
 
     def get_diff_weight(self, multiplier=1, shape=None, device=None):
@@ -535,7 +522,9 @@ class LokrModule(LycorisBaseModule):
             hc = hc.transpose(-1, -2)
             h = hc.reshape(*hc.shape[:-2], -1)
 
-        return self.drop(h * scale * self.scalar)
+        h = self.drop(h)
+        h = self.rank_drop(h)
+        return h * scale * self.scalar
 
     def bypass_forward(self, x, scale=1):
         return self.org_forward(x) + self.bypass_forward_diff(x, scale=scale)
@@ -562,6 +551,8 @@ class LokrModule(LycorisBaseModule):
             new_weight = base_weight + diff_weight * self.multiplier
 
         delta_weight = new_weight - base_weight
+        delta_weight = self.drop(delta_weight)
+        delta_weight = self.rank_drop(delta_weight)
         delta = self.op(x, delta_weight, None, **self.kw_dict)
         return base + delta
 

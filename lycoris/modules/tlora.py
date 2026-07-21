@@ -238,12 +238,6 @@ class TLoraModule(LycorisBaseModule):
         self.scale = alpha / lora_dim
         self.register_buffer("alpha", torch.tensor(alpha))
 
-        # Dropout
-        if dropout:
-            self.dropout = nn.Dropout(dropout)
-        else:
-            self.dropout = nn.Identity()
-
     def _initialize_from_svd(
         self,
         org_module: nn.Module,
@@ -512,7 +506,9 @@ class TLoraModule(LycorisBaseModule):
             base_out = self.up_op(q_base_scaled, self.base_p.to(dtype), None)
 
         diff = curr_out - base_out
-        return self.dropout(diff * self.scale * scale)
+        diff = self.drop(diff)
+        diff = self.rank_drop(diff)
+        return diff * self.scale * scale
 
     def bypass_forward(self, x: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
         """Forward with bypass mode (compute LoRA separately)."""
@@ -541,7 +537,8 @@ class TLoraModule(LycorisBaseModule):
 
         new_weight = base_weight + diff_weight
         delta_weight = new_weight - base_weight
-
+        delta_weight = self.drop(delta_weight)
+        delta_weight = self.rank_drop(delta_weight)
         delta = self.op(x, delta_weight, None, **self.kw_dict)
         return base + delta
 

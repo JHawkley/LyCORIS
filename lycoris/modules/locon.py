@@ -9,15 +9,6 @@ from .base import LycorisBaseModule
 from ..functional.general import rebuild_tucker
 from ..logging import logger
 
-
-@cache
-def log_wd():
-    return logger.warning(
-        "Using weight_decompose=True with LoRA (DoRA) will ignore network_dropout."
-        "Only rank dropout and module dropout will be applied"
-    )
-
-
 class LoConModule(LycorisBaseModule):
     name = "locon"
     support_module = {
@@ -128,13 +119,6 @@ class LoConModule(LycorisBaseModule):
                     .transpose(1, 0)
                 ).float()
 
-        if dropout:
-            self.dropout = nn.Dropout(dropout)
-            if self.wd:
-                log_wd()
-        else:
-            self.dropout = nn.Identity()
-
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
         alpha = lora_dim if alpha is None or alpha == 0 else alpha
@@ -207,15 +191,6 @@ class LoConModule(LycorisBaseModule):
             weight = wa.view(wa.size(0), -1) @ wb.view(wb.size(0), -1)
 
         weight = weight.view(self.shape)
-        if self.training and self.rank_dropout:
-            drop = (torch.rand(weight.size(0), device=device) > self.rank_dropout).to(
-                weight.dtype
-            )
-            drop = drop.view(-1, *[1] * len(weight.shape[1:]))
-            if self.rank_dropout_scale:
-                drop /= drop.mean()
-            weight *= drop
-
         return weight * self.scalar.to(device)
 
     def get_diff_weight(self, multiplier=1, shape=None, device=None):
@@ -284,24 +259,14 @@ class LoConModule(LycorisBaseModule):
         return scaled, orig_norm * ratio
 
     def bypass_forward_diff(self, x, scale=1):
+        weights = self.lora_down(x)
         if self.tucker:
-            mid = self.lora_mid(self.lora_down(x))
-        else:
-            mid = self.lora_down(x)
+            weights = self.lora_mid(weights)
+        weights = self.lora_up(weights)
 
-        if self.rank_dropout and self.training:
-            drop = (
-                torch.rand(self.lora_dim, device=mid.device) > self.rank_dropout
-            ).to(mid.dtype)
-            if self.rank_dropout_scale:
-                drop /= drop.mean()
-            if (dims := len(x.shape)) == 4:
-                drop = drop.view(1, -1, 1, 1)
-            else:
-                drop = drop.view(*[1] * (dims - 1), -1)
-            mid = mid * drop
-
-        return self.dropout(self.lora_up(mid) * self.scalar * self.scale * scale)
+        weights = self.drop(weights)
+        weights = self.rank_drop(weights)
+        return weights * self.scalar * self.scale * scale
 
     def bypass_forward(self, x, scale=1):
         return self.org_forward(x) + self.bypass_forward_diff(x, scale=scale)
@@ -328,5 +293,7 @@ class LoConModule(LycorisBaseModule):
             new_weight = base_weight + diff_weight * self.multiplier
 
         delta_weight = new_weight - base_weight
+        delta_weight = self.drop(delta_weight)
+        delta_weight = self.rank_drop(delta_weight)
         delta = self.op(x, delta_weight, None, **self.kw_dict)
         return base + delta
