@@ -208,9 +208,8 @@ class GLoRAModule(LycorisBaseModule):
         return self.org_weight + diff_w, None
 
     def _bypass_forward(self, x, scale=1, diff=False):
-        scale = self.scale * scale
-        ax_mid = self.a2(x) * scale
-        bx_mid = self.b2(x) * scale
+        ax_mid = self.a2(x)
+        bx_mid = self.b2(x)
 
         if self.rank_dropout and self.training:
             drop_a = (
@@ -232,9 +231,9 @@ class GLoRAModule(LycorisBaseModule):
             bx_mid = bx_mid * drop_b
         return (
             self.org_forward(
-                (0 if diff else x) + self.drop(self.a1(ax_mid)) * self.scale
+                (0 if diff else x) + self.drop(self.a1(ax_mid)) * self.scale * self.scalar * scale
             )
-            + self.drop(self.b1(bx_mid)) * self.scale
+            + self.drop(self.b1(bx_mid)) * self.scale * self.scalar * scale
         )
 
     def bypass_forward_diff(self, x, scale=1):
