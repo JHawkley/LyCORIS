@@ -216,20 +216,22 @@ class LohaModule(LycorisBaseModule):
             weight = weight.reshape(shape)
         return weight
 
-    def get_diff_weight(self, multiplier=1, shape=None, device=None):
-        scale = self.scale * multiplier
-        diff = self.get_weight(shape) * scale
+    def get_diff_weight(self, multiplier=1.0, shape=None, device=None):
+        diff = self.get_weight(shape)
+        if multiplier != 1.0:
+            diff = diff * multiplier
         if device is not None:
             diff = diff.to(device)
         return diff, None
 
-    def get_merged_weight(self, multiplier=1, shape=None, device=None):
-        diff = self.get_diff_weight(multiplier=1, shape=shape, device=device)[0]
+    def get_merged_weight(self, multiplier=1.0, shape=None, device=None):
+        diff = self.get_diff_weight(multiplier=1.0, shape=shape, device=device)[0]
         weight = self.org_weight
+        merged = weight + diff
         if self.wd:
-            merged = self.apply_weight_decompose(weight + diff, multiplier)
-        else:
-            merged = weight + diff * multiplier
+            merged = self.apply_weight_decompose(merged, multiplier)
+        elif multiplier != 1.0:
+            merged = merged * multiplier
         return merged, None
 
     def apply_weight_decompose(self, weight, multiplier=1):
