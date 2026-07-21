@@ -11,28 +11,31 @@ from torch.overrides import (
 def rank_dropout(
     input: Tensor,
     p: float = 0.5,
-    rank_dropout_scale: bool = False,
+    scale: bool = False,
     training: bool = True,
 ) -> Tensor:
     if has_torch_function_unary(input):
         return handle_torch_function(
             rank_dropout, (input,), input,
-            p=p, rank_dropout_scale=rank_dropout_scale, training=training
+            p=p, scale=scale, training=training
         )
 
     if p < 0.0 or p > 1.0:
-        raise ValueError(f"dropout probability has to be between 0 and 1, but got {p}")
+        raise ValueError(
+            f"dropout probability has to be between 0 and 1, but got {p}"
+        )
 
-    if not training:
+    if not training or p == 0.0:
         return input
 
-    mask_shape = [1] * input.ndim
-    mask_shape[0] = input.shape[0]
+    mask = (
+        torch.empty(input.shape[0], device=input.device, dtype=input.dtype)
+        .bernoulli_(1.0 - p)
+    )
+    if scale:
+        mask /= mask.mean()
 
-    drop = torch.empty(mask_shape, device=input.device, dtype=input.dtype).bernoulli_(1.0 - p)
-    if rank_dropout_scale:
-        drop /= drop.mean()
-    return input * drop
+    return input * mask.view(-1, *[1] * (input.ndim - 1))
 
 def rank_dropout_with_bias(
     weight: Tensor,
@@ -51,8 +54,9 @@ def rank_dropout_with_bias(
     if not training or p == 0.0:
         return weight, bias
 
-    mask = torch.empty(weight.shape[0], device=weight.device, dtype=weight.dtype).bernoulli_(
-        1.0 - p
+    mask = (
+        torch.empty(weight.shape[0], device=weight.device, dtype=weight.dtype)
+        .bernoulli_(1.0 - p)
     )
     if scale:
         mask = mask / mask.mean()
