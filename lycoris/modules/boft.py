@@ -224,7 +224,7 @@ class ButterflyOFTModule(LycorisBaseModule):
                 .flatten(-3)
                 .unflatten(-1, (-1, b))
             )
-            inp = torch.einsum("b i j, b j ... -> b i ...", bi, inp)
+            inp = torch.einsum("b i j, ... b j -> ... b i", bi, inp)
             inp = (
                 inp.flatten(-2).unflatten(-1, (-1, k, g)).transpose(-2, -1).flatten(-3)
             )

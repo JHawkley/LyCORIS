@@ -103,7 +103,7 @@ def bypass_forward_diff(x, org_out, *weights, constraint=None, need_transpose=Fa
     oft_out = torch.einsum(
         "k n m, ... k n -> ... k m", r - I, org_out.view(*shape, block_num, block_size)
     )
-    out = oft_out.view(*shape, -1)
+    out = oft_out.reshape(*shape, -1)
     if rescale is not None:
         out = rescale.transpose(-1, 0) * out
         out = out + (rescale - 1).transpose(-1, 0) * org_out

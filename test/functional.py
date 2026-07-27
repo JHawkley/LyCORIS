@@ -6,7 +6,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lycoris.functional import locon, loha, lokr, diag_oft, boft
+from lycoris.functional import locon, loha, lokr
+from lycoris.functional.diag_oft import (
+    weight_gen as diag_oft_weight_gen,
+    diff_weight as diag_oft_diff_weight,
+    bypass_forward_diff as diag_oft_bypass_forward_diff,
+)
+from lycoris.functional.boft import (
+    weight_gen as boft_weight_gen,
+    diff_weight as boft_diff_weight,
+    bypass_forward_diff as boft_bypass_forward_diff,
+)
 
 
 EPS_DTYPE = {
@@ -16,7 +26,52 @@ EPS_DTYPE = {
 }
 
 
-modules = [locon, loha, lokr, diag_oft, boft]
+class _LoconLike:
+    __name__ = "locon"
+
+    def __init__(self):
+        self.weight_gen = staticmethod(locon.weight_gen)
+        self.diff_weight = staticmethod(locon.diff_weight)
+        self.bypass_forward_diff = staticmethod(locon.bypass_forward_diff)
+
+
+class _LohaLike:
+    __name__ = "loha"
+
+    def __init__(self):
+        self.weight_gen = staticmethod(loha.weight_gen)
+        self.diff_weight = staticmethod(loha.diff_weight)
+        self.bypass_forward_diff = staticmethod(loha.bypass_forward_diff)
+
+
+class _LokrLike:
+    __name__ = "lokr"
+
+    def __init__(self):
+        self.weight_gen = staticmethod(lokr.weight_gen)
+        self.diff_weight = staticmethod(lokr.diff_weight)
+        self.bypass_forward_diff = staticmethod(lokr.bypass_forward_diff)
+
+
+class _DiagOFTLike:
+    __name__ = "diag_oft"
+
+    def __init__(self):
+        self.weight_gen = staticmethod(diag_oft_weight_gen)
+        self.diff_weight = staticmethod(diag_oft_diff_weight)
+        self.bypass_forward_diff = staticmethod(diag_oft_bypass_forward_diff)
+
+
+class _BoftLike:
+    __name__ = "boft"
+
+    def __init__(self):
+        self.weight_gen = staticmethod(boft_weight_gen)
+        self.diff_weight = staticmethod(boft_diff_weight)
+        self.bypass_forward_diff = staticmethod(boft_bypass_forward_diff)
+
+
+modules = [_LoconLike(), _LohaLike(), _LokrLike(), _DiagOFTLike(), _BoftLike()]
 base_module_and_input_adn_weight = [
     lambda dim: (F.linear, torch.randn(dim, dim), torch.randn(1, dim)),
     lambda dim: (F.conv1d, torch.randn(dim, dim, 3), torch.randn(1, dim, 16)),
@@ -72,12 +127,19 @@ class LycorisFunctionalTests(unittest.TestCase):
                 param = param.to(device, dtype)
                 params[idx] = param + torch.randn_like(param) * 0.01
 
-        if module in {boft, diag_oft}:
+        if module.__name__ == "boft":
+            # boft.bypass_forward_diff(org_out, *weights, constraint=None, need_transpose=False)
             diff_w = module.diff_weight(w, *params)
             diff_y = module.bypass_forward_diff(y, *params, need_transpose=w.ndim > 2)
+        elif module.__name__ == "diag_oft":
+            # diag_oft.bypass_forward_diff(x, org_out, *weights, constraint=None, need_transpose=False)
+            diff_w = module.diff_weight(w, *params)
+            diff_y = module.bypass_forward_diff(x, y, *params, need_transpose=w.ndim > 2)
         else:
+            # For locon/loha/lokr, bypass_forward_diff signature is:
+            #   bypass_forward_diff(x, org_out, *weights, ...)
             diff_w = module.diff_weight(*params)
-            diff_y = module.bypass_forward_diff(x, *params)
+            diff_y = module.bypass_forward_diff(x, y, *params)
 
         diff_y_from_diff_w = func(x, diff_w.to(x))
         self.assertTrue(
