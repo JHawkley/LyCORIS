@@ -223,6 +223,9 @@ class LohaModule(LycorisBaseModule):
 
         weight = weight * self.scalar
 
+        # Reshape to the target weight shape (handles conv flattened diff)
+        weight = weight.view(self.shape)
+
         if diff:
             return weight
 

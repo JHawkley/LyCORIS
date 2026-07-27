@@ -224,7 +224,7 @@ class DiagOFTModule(LycorisBaseModule):
             return self.bypass_forward(x, scale)
 
         base = self.org_forward(x, *args, **kwargs)
-        new_weight = self.make_weight(scale, x.device)
+        new_weight = self.make_weight(scale=scale, device=x.device)
         base_weight = self._current_weight().to(new_weight.device)
         new_weight = new_weight.to(base_weight.dtype)
 
