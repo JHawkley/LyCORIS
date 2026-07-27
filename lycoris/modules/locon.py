@@ -183,7 +183,9 @@ class LoConModule(LycorisBaseModule):
                 "scalar", torch.ones_like(self.scalar), persistent=False
             )
 
-    def make_weight(self, device=None):
+    def make_weight(self, scale=1, device=None, diff=False):
+        # NOTE: Computing the diff weight (diff=True) is faster than computing
+        # the merged weight, since it avoids the addition of the original weight.
         wa = self.lora_up.weight.to(device)
         wb = self.lora_down.weight.to(device)
         if self.tucker:
@@ -195,11 +197,22 @@ class LoConModule(LycorisBaseModule):
             weight = wa.view(wa.size(0), -1) @ wb.view(wb.size(0), -1)
 
         weight = weight.view(self.shape)
-        return weight * self.scalar.to(device)
+        delta = weight * self.scalar.to(device) * self.scale * scale
+
+        if diff:
+            return delta
+
+        return self.org_weight + delta
 
     def get_diff_weight(self, multiplier=1, shape=None, device=None):
-        scale = self.scale * multiplier
-        diff = self.make_weight(device=device) * scale
+        if self.wd:
+            # Weight decomposition affects the final weight, so the diff must be
+            # computed from the fully decomposed merged weight.
+            merged, _ = self.get_merged_weight(multiplier=multiplier, device=device)
+            org = self.org_weight.to(device, dtype=merged.dtype) if device else self.org_weight.to(dtype=merged.dtype)
+            diff = merged - org
+        else:
+            diff = self.make_weight(scale=multiplier, device=device, diff=True)
         if shape is not None:
             diff = diff.view(shape)
         if device is not None:
@@ -207,12 +220,13 @@ class LoConModule(LycorisBaseModule):
         return diff, None
 
     def get_merged_weight(self, multiplier=1, shape=None, device=None):
-        diff = self.get_diff_weight(multiplier=1, shape=shape, device=device)[0]
-        weight = self.org_weight
         if self.wd:
-            merged = self.apply_weight_decompose(weight + diff, multiplier)
+            merged = self.make_weight(scale=1, device=device, diff=False)
+            merged = self.apply_weight_decompose(merged, multiplier)
         else:
-            merged = weight + diff * multiplier
+            merged = self.make_weight(scale=multiplier, device=device, diff=False)
+        if shape is not None:
+            merged = merged.view(shape)
         return merged, None
 
     def apply_weight_decompose(self, weight, multiplier=1):
@@ -284,11 +298,12 @@ class LoConModule(LycorisBaseModule):
             return self.bypass_forward(x, scale=self.multiplier)
 
         base = self.org_forward(x, *args, **kwargs)
-        scale = self.scale
         device = x.device
 
         base_weight = self._current_weight().to(device)
-        diff_weight = self.make_weight(device).to(base_weight.dtype) * scale
+        diff_weight = self.make_weight(scale=1, device=device, diff=True).to(
+            base_weight.dtype
+        )
         if self.wd:
             new_weight = self.apply_weight_decompose(
                 base_weight + diff_weight, self.multiplier

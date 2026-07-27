@@ -352,40 +352,53 @@ class LokrModule(LycorisBaseModule):
                 "scalar", torch.ones_like(self.scalar), persistent=False
             )
 
-    def get_weight(self, shape):
-        weight = make_kron(
-            self.lokr_w1 if self.use_w1 else self.lokr_w1_a @ self.lokr_w1_b,
-            (
-                self.lokr_w2
-                if self.use_w2
-                else (
-                    rebuild_tucker(self.lokr_t2, self.lokr_w2_a, self.lokr_w2_b)
-                    if self.tucker
-                    else self.lokr_w2_a @ self.lokr_w2_b
-                )
-            ),
-            self.scale,
-        )
-        if shape is not None:
-            weight = weight.view(shape)
-        return weight
+    def make_weight(self, scale=1, device=None, diff=False):
+        # NOTE: Computing the diff weight (diff=True) is faster than computing
+        # the merged weight, since it avoids the addition of the original weight.
+        kron_scale = self.scale * scale
+        if self.use_w1:
+            w1 = self.lokr_w1
+        else:
+            w1 = self.lokr_w1_a @ self.lokr_w1_b
+
+        if self.use_w2:
+            w2 = self.lokr_w2
+        elif self.tucker:
+            w2 = rebuild_tucker(self.lokr_t2, self.lokr_w2_a, self.lokr_w2_b)
+        else:
+            w2 = self.lokr_w2_a @ self.lokr_w2_b
+
+        weight = make_kron(w1, w2, kron_scale)
+        weight = weight * self.scalar
+
+        if diff:
+            return weight
+
+        return self.org_weight + weight
 
     def get_diff_weight(self, multiplier=1.0, shape=None, device=None):
-        diff = self.get_weight(shape)
-        if multiplier != 1.0:
-            diff = diff * multiplier
+        if self.wd:
+            # Weight decomposition affects the final weight, so the diff must be
+            # computed from the fully decomposed merged weight.
+            merged, _ = self.get_merged_weight(multiplier=multiplier, device=device)
+            org = self.org_weight.to(device, dtype=merged.dtype) if device else self.org_weight.to(dtype=merged.dtype)
+            diff = merged - org
+        else:
+            diff = self.make_weight(scale=multiplier, device=device, diff=True)
+        if shape is not None:
+            diff = diff.view(shape)
         if device is not None:
             diff = diff.to(device)
         return diff, None
 
     def get_merged_weight(self, multiplier=1.0, shape=None, device=None):
-        diff = self.get_diff_weight(multiplier=1.0, shape=shape, device=device)[0]
-        weight = self.org_weight
-        merged = weight + diff
         if self.wd:
+            merged = self.make_weight(scale=1, device=device, diff=False)
             merged = self.apply_weight_decompose(merged, multiplier)
-        elif multiplier != 1.0:
-            merged = merged * multiplier
+        else:
+            merged = self.make_weight(scale=multiplier, device=device, diff=False)
+        if shape is not None:
+            merged = merged.view(shape)
         return merged, None
 
     def apply_weight_decompose(self, weight, multiplier=1):
@@ -433,7 +446,7 @@ class LokrModule(LycorisBaseModule):
 
     @torch.no_grad()
     def apply_max_norm(self, max_norm, device=None):
-        orig_norm = self.get_weight(self.shape).norm()
+        orig_norm = self.make_weight(device=device, diff=True).norm()
         norm = torch.clamp(orig_norm, max_norm / 2)
         desired = torch.clamp(norm, max=max_norm)
         ratio = desired.cpu() / norm.cpu()
@@ -544,7 +557,9 @@ class LokrModule(LycorisBaseModule):
 
         base = self.org_forward(x, *args, **kwargs)
         base_weight = self._current_weight().to(x.device)
-        diff_weight = self.get_weight(self.shape).to(base_weight.dtype) * self.scalar
+        diff_weight = self.make_weight(scale=1, device=x.device, diff=True).to(
+            base_weight.dtype
+        )
 
         if self.wd:
             new_weight = self.apply_weight_decompose(

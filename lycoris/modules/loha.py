@@ -188,50 +188,69 @@ class LohaModule(LycorisBaseModule):
                 "scalar", torch.ones_like(self.scalar), persistent=False
             )
 
-    def get_weight(self, shape):
-        scale = torch.tensor(
-            self.scale, dtype=self.hada_w1_b.dtype, device=self.hada_w1_b.device
+    def make_weight(self, scale=1, device=None, diff=False):
+        # NOTE: Computing the diff weight (diff=True) is faster than computing
+        # the merged weight, since it avoids the addition of the original weight.
+        scale_t = torch.tensor(
+            self.scale * scale,
+            dtype=self.hada_w1_b.dtype,
+            device=self.hada_w1_b.device,
         )
+        if device is not None:
+            scale_t = scale_t.to(device)
+            w1b = self.hada_w1_b.to(device)
+            w1a = self.hada_w1_a.to(device)
+            w2b = self.hada_w2_b.to(device)
+            w2a = self.hada_w2_a.to(device)
+            t1 = self.hada_t1.to(device) if self.tucker else None
+            t2 = self.hada_t2.to(device) if self.tucker else None
+        else:
+            w1b = self.hada_w1_b
+            w1a = self.hada_w1_a
+            w2b = self.hada_w2_b
+            w2a = self.hada_w2_a
+            t1 = self.hada_t1 if self.tucker else None
+            t2 = self.hada_t2 if self.tucker else None
+
         if self.tucker:
             weight = loha_diff_weight(
-                self.hada_w1_b,
-                self.hada_w1_a,
-                self.hada_w2_b,
-                self.hada_w2_a,
-                self.hada_t1,
-                self.hada_t2,
-                gamma=scale,
+                w1b, w1a, w2b, w2a, t1, t2, gamma=scale_t,
             )
         else:
             weight = loha_diff_weight(
-                self.hada_w1_b,
-                self.hada_w1_a,
-                self.hada_w2_b,
-                self.hada_w2_a,
-                None,
-                None,
-                gamma=scale,
+                w1b, w1a, w2b, w2a, None, None, gamma=scale_t,
             )
-        if shape is not None:
-            weight = weight.reshape(shape)
-        return weight
+
+        weight = weight * self.scalar
+
+        if diff:
+            return weight
+
+        # diff=False: return merged weight (original + diff)
+        org = self.org_weight.to(device, dtype=weight.dtype) if device else self.org_weight.to(dtype=weight.dtype)
+        return org + weight
 
     def get_diff_weight(self, multiplier=1.0, shape=None, device=None):
-        diff = self.get_weight(shape)
-        if multiplier != 1.0:
-            diff = diff * multiplier
-        if device is not None:
-            diff = diff.to(device)
+        if self.wd:
+            # Weight decomposition affects the final weight, so the diff must be
+            # computed from the fully decomposed merged weight.
+            merged, _ = self.get_merged_weight(multiplier=multiplier, device=device)
+            org = self.org_weight.to(device, dtype=merged.dtype) if device else self.org_weight.to(dtype=merged.dtype)
+            diff = merged - org
+        else:
+            diff = self.make_weight(scale=multiplier, device=device, diff=True)
+        if shape is not None:
+            diff = diff.view(shape)
         return diff, None
 
     def get_merged_weight(self, multiplier=1.0, shape=None, device=None):
-        diff = self.get_diff_weight(multiplier=1.0, shape=shape, device=device)[0]
-        weight = self.org_weight
-        merged = weight + diff
         if self.wd:
+            merged = self.make_weight(scale=1, device=device, diff=False)
             merged = self.apply_weight_decompose(merged, multiplier)
-        elif multiplier != 1.0:
-            merged = merged * multiplier
+        else:
+            merged = self.make_weight(scale=multiplier, device=device, diff=False)
+        if shape is not None:
+            merged = merged.view(shape)
         return merged, None
 
     def apply_weight_decompose(self, weight, multiplier=1):
@@ -273,7 +292,7 @@ class LohaModule(LycorisBaseModule):
 
     @torch.no_grad()
     def apply_max_norm(self, max_norm, device=None):
-        orig_norm = (self.get_weight(self.shape) * self.scalar).norm()
+        orig_norm = self.make_weight(device=device, diff=True).norm()
         norm = torch.clamp(orig_norm, max_norm / 2)
         desired = torch.clamp(norm, max=max_norm)
         ratio = desired.cpu() / norm.cpu()
@@ -285,7 +304,7 @@ class LohaModule(LycorisBaseModule):
         return scaled, orig_norm * ratio
 
     def bypass_forward_diff(self, x, scale=1):
-        diff_weight = self.get_weight(self.shape) * self.scalar * scale
+        diff_weight = self.make_weight(scale=scale, diff=True)
         diff_weight = self.drop(diff_weight)
         diff_weight = self.rank_drop(diff_weight)
         return self.op(x, diff_weight, **self.kw_dict)
@@ -303,7 +322,9 @@ class LohaModule(LycorisBaseModule):
 
         base = self.org_forward(x, *args, **kwargs)
         base_weight = self._current_weight().to(x.device)
-        diff_weight = self.get_weight(self.shape).to(base_weight.dtype) * self.scalar
+        diff_weight = self.make_weight(scale=1, device=x.device, diff=True).to(
+            base_weight.dtype
+        )
 
         if self.wd:
             new_weight = self.apply_weight_decompose(

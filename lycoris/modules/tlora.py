@@ -368,75 +368,51 @@ class TLoraModule(LycorisBaseModule):
             "alpha": self.alpha,
         }
 
-    def get_diff_weight(self, multiplier=1.0, shape=None, device=None):
-        """
-        Compute the weight difference: current - base.
-
-        For T-LoRA: ΔW = P @ diag(λ*mask) @ Q - P_base @ diag(λ_base*mask) @ Q_base
-        """
+    def make_weight(self, scale=1, device=None, diff=False):
+        # NOTE: Computing the diff weight (diff=True) is faster than computing
+        # the merged weight, since it avoids the convolution kernel-size expansion
+        # and the final merge pass.
         if device is None:
             device = self.q_layer.weight.device
 
         mask = self._get_mask(device)
 
-        # Current weights
-        q = self.q_layer.weight.to(device)  # (lora_dim, in_dim) or conv shape
-        p = self.p_layer.weight.to(device)  # (out_dim, lora_dim) or conv shape
-        lam = self.lambda_layer.to(device) * mask  # (1, lora_dim)
+        q = self.q_layer.weight.to(device)
+        p = self.p_layer.weight.to(device)
+        lam = self.lambda_layer.to(device) * mask
 
-        # Base weights
         q_base = self.base_q.to(device)
         p_base = self.base_p.to(device)
         lam_base = self.base_lambda.to(device) * mask
 
         if self.isconv:
-            # For conv, reshape to 2D for matmul
-            # q: (lora_dim, in_ch, 1, ...) -> (lora_dim, in_ch)
-            # p: (out_ch, lora_dim, 1, ...) -> (out_ch, lora_dim)
             q_2d = q.reshape(self.lora_dim, -1)
             p_2d = p.reshape(self.shape[0], self.lora_dim)
             q_base_2d = q_base.reshape(self.lora_dim, -1)
             p_base_2d = p_base.reshape(self.shape[0], self.lora_dim)
-
-            # Current: P @ diag(λ) @ Q
-            # diag(λ) @ Q = λ.T * Q (broadcasting)
-            curr = p_2d @ (lam.T * q_2d)  # (out_ch, in_ch)
+            curr = p_2d @ (lam.T * q_2d)
             base = p_base_2d @ (lam_base.T * q_base_2d)
-
-            # Reshape back to conv shape with 1x1 kernel
             kernel_ones = [1] * (len(self.shape) - 2)
             diff = (curr - base).reshape(self.shape[0], self.shape[1], *kernel_ones)
         else:
-            # For linear: P @ diag(λ) @ Q
-            # p: (out_features, lora_dim), λ: (1, lora_dim), q: (lora_dim, in_features)
-            curr = p @ (lam.T * q)  # (out_features, in_features)
+            curr = p @ (lam.T * q)
             base = p_base @ (lam_base.T * q_base)
             diff = curr - base
 
-        diff = diff * self.scale * multiplier
+        diff = diff * self.scale * scale
 
-        if shape is not None:
-            diff = diff.view(shape)
+        if diff:
+            return diff
 
-        return diff, None
-
-    def get_merged_weight(self, multiplier=1.0, shape=None, device=None):
-        """Get original weight + LoRA delta."""
-        diff, _ = self.get_diff_weight(multiplier=multiplier, shape=shape, device=device)
         weight = self.org_weight
         if device is not None:
             weight = weight.to(device)
 
-        # For conv with non-1x1 kernel, we need to handle shape mismatch
         if self.isconv and diff.shape != weight.shape:
-            # diff is 1x1, weight has kernel - can't directly add
-            # This is a limitation; for full merge, would need to expand diff
-            # For now, return weight + diff padded to kernel size
             kernel_size = weight.shape[2:]
             if all(k == 1 for k in kernel_size):
                 merged = weight + diff
             else:
-                # Expand 1x1 diff to kernel size by padding
                 pad_dims = []
                 for k in reversed(kernel_size):
                     pad_dims.extend([0, k - 1])
@@ -445,7 +421,15 @@ class TLoraModule(LycorisBaseModule):
         else:
             merged = weight + diff
 
-        return merged, None
+        return merged
+
+    def get_diff_weight(self, multiplier=1.0, shape=None, device=None):
+        """Get the weight difference: current - base."""
+        return self.make_weight(scale=multiplier, device=device, diff=True), None
+
+    def get_merged_weight(self, multiplier=1.0, shape=None, device=None):
+        """Get original weight + LoRA delta."""
+        return self.make_weight(scale=multiplier, device=device, diff=False), None
 
     def orthogonality_regularization(self) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -527,21 +511,15 @@ class TLoraModule(LycorisBaseModule):
         if self.bypass_mode:
             return self.bypass_forward(x, scale=self.multiplier)
 
-        # Standard forward: compute full weight and apply
         base = self.org_forward(x, *args, **kwargs)
-        device = x.device
 
-        base_weight = self._current_weight().to(device)
-        diff_weight, _ = self.get_diff_weight(multiplier=self.multiplier, device=device)
-        diff_weight = diff_weight.to(base_weight.dtype)
+        diff_weight = self.make_weight(scale=self.multiplier, device=x.device, diff=True).to(x.dtype)
 
         # For conv with different kernel sizes, use bypass mode logic
-        if self.isconv and diff_weight.shape != base_weight.shape:
+        if self.isconv and diff_weight.shape != self._current_weight().shape:
             return self.bypass_forward(x, scale=self.multiplier)
 
-        new_weight = base_weight + diff_weight
-        delta_weight = new_weight - base_weight
-        delta_weight = self.drop(delta_weight)
+        delta_weight = self.drop(diff_weight)
         delta_weight = self.rank_drop(delta_weight)
         delta = self.op(x, delta_weight, None, **self.kw_dict)
         return base + delta

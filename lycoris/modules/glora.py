@@ -182,7 +182,9 @@ class GLoRAModule(LycorisBaseModule):
                 "scalar", torch.ones_like(self.scalar), persistent=False
             )
 
-    def make_weight(self, device=None):
+    def make_weight(self, scale=1, device=None, diff=False):
+        # NOTE: Computing the diff weight (diff=True) is faster than computing
+        # the merged weight, since it avoids the addition of the original weight.
         wa1 = self.a1.weight.view(self.a1.weight.size(0), -1)
         wa2 = self.a2.weight.view(self.a2.weight.size(0), -1)
         orig = self.org_weight
@@ -199,17 +201,25 @@ class GLoRAModule(LycorisBaseModule):
             w_wa2 = torch.einsum("o i ..., i j -> o j ...", w_wa1, wa2)
         else:
             w_wa2 = (orig @ wa1) @ wa2
-        return (wb + w_wa2) * self.scale * self.scalar
+
+        delta = (wb + w_wa2) * self.scale * self.scalar * scale
+
+        if diff:
+            return delta
+
+        return self.org_weight + delta
 
     def get_diff_weight(self, multiplier=1.0, shape=None, device=None):
-        weight = self.make_weight(device) * multiplier
+        diff = self.make_weight(scale=multiplier, device=device, diff=True)
         if shape is not None:
-            weight = weight.view(shape)
-        return weight, None
+            diff = diff.view(shape)
+        return diff, None
 
     def get_merged_weight(self, multiplier=1, shape=None, device=None):
-        diff_w, _ = self.get_diff_weight(multiplier, shape, device)
-        return self.org_weight + diff_w, None
+        merged = self.make_weight(scale=multiplier, device=device, diff=False)
+        if shape is not None:
+            merged = merged.view(shape)
+        return merged, None
 
     def _bypass_forward(self, x, scale=1, diff=False):
         ax = self.a2(x)
@@ -238,10 +248,7 @@ class GLoRAModule(LycorisBaseModule):
             return self.bypass_forward(x, self.multiplier)
 
         base = self.org_forward(x, *args, **kwargs)
-        base_weight = self._current_weight().to(x.device)
-        diff_weight = self.get_diff_weight(multiplier=self.multiplier)[0].to(
-            base_weight.device, dtype=base_weight.dtype
-        )
+        diff_weight = self.make_weight(scale=self.multiplier, diff=True).to(x.dtype)
         diff_weight = self.drop(diff_weight)
         diff_weight = self.rank_drop(diff_weight)
         delta = self.op(x, diff_weight, None, **self.kw_dict)

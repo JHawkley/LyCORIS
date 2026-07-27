@@ -138,6 +138,8 @@ class DiagOFTModule(LycorisBaseModule):
         return r
 
     def make_weight(self, scale=1, device=None, diff=False):
+        # NOTE: Computing the merged weight (diff=False) is faster than computing
+        # the diff weight, since diff=True requires an additional subtraction pass.
         r = self.get_r()
         _, *shape = self.org_weight.shape
         org_weight = self.org_weight.to(device, dtype=r.dtype)

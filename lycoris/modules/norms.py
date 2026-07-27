@@ -72,48 +72,46 @@ class NormModule(LycorisBaseModule):
             module.b_norm.copy_(b_norm)
         return module
     
-    def make_weight(self, scale=1, device=None):
-        # Unlike many other algorithms, this function returns the merged weight
-        # and bias instead of the difference from the base model.  Use `get_diff_weight`
-        # if only the difference is needed.
-        diff_w, diff_b = self.get_diff_weight(scale, device=device)
-        org_weight = self.org_module[0].weight.to(device, dtype=diff_w.dtype)
-
-        if diff_b is None:
-            return org_weight + diff_w, None
-
-        org_bias = self.org_module[0].bias.to(device, dtype=diff_b.dtype)
-        return org_weight + diff_w, org_bias + diff_b
-
-    def get_diff_weight(self, multiplier=1, shape=None, device=None):
+    def make_weight(self, scale=1, device=None, diff=False):
+        # NOTE: Computing the diff weight (diff=True) is faster than computing
+        # the merged weight, since it avoids adding the original weight (and bias).
         if self.not_supported:
             return 0, 0
-        w = self.w_norm * multiplier
+        w = self.w_norm * scale
         if device is not None:
             w = w.to(device)
-        if shape is not None:
-            w = w.view(shape)
         if self.b_norm is not None:
-            b = self.b_norm * multiplier
+            b = self.b_norm * scale
             if device is not None:
                 b = b.to(device)
-            if shape is not None:
-                b = b.view(shape)
         else:
             b = None
-        return w, b
+
+        if diff:
+            return w, b
+
+        org_weight = self.org_module[0].weight.to(device, dtype=w.dtype)
+        if b is None:
+            return org_weight + w, None
+        org_bias = self.org_module[0].bias.to(device, dtype=b.dtype)
+        return org_weight + w, org_bias + b
+
+    def get_diff_weight(self, multiplier=1, shape=None, device=None):
+        diff, diff_b = self.make_weight(scale=multiplier, device=device, diff=True)
+        if shape is not None:
+            diff = diff.view(shape)
+            if diff_b is not None:
+                diff_b = diff_b.view(shape)
+        return diff, diff_b
 
     def get_merged_weight(self, multiplier=1, shape=None, device=None):
         if self.not_supported:
             return None, None
-        diff_w, diff_b = self.get_diff_weight(multiplier, shape, device)
-        org_w = self.org_module[0].weight.to(device, dtype=self.w_norm.dtype)
-        weight = org_w + diff_w
-        if diff_b is not None:
-            org_b = self.org_module[0].bias.to(device, dtype=self.b_norm.dtype)
-            bias = org_b + diff_b
-        else:
-            bias = None
+        weight, bias = self.make_weight(scale=multiplier, device=device, diff=False)
+        if shape is not None:
+            weight = weight.view(shape)
+            if bias is not None:
+                bias = bias.view(shape)
         return weight, bias
 
     def forward(self, x, *args, **kwargs):
@@ -126,7 +124,9 @@ class NormModule(LycorisBaseModule):
 
         base = self.org_forward(x, *args, **kwargs)
 
-        delta_w, delta_b = self.get_diff_weight(self.multiplier, device=x.device)
+        delta_w, delta_b = self.make_weight(
+            scale=self.multiplier, device=x.device, diff=True
+        )
         delta_w, delta_b = rank_dropout_with_bias(
             delta_w, delta_b,
             p=self.rank_dropout,

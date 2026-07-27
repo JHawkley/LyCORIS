@@ -89,27 +89,29 @@ class IA3Module(LycorisBaseModule):
         self.org_module[0].forward = self.forward
 
     def make_weight(self, multiplier=1, shape=None, device=None, diff=False):
+        # NOTE: The performance difference between diff=True and diff=False is
+        # negligible for IA3, since both paths use essentially the same operations.
         weight = self.weight * multiplier + int(not diff)
         if self.train_input:
-            diff = self.org_weight * weight
+            result = self.org_weight * weight
         else:
-            diff = self.org_weight.transpose(0, 1) * weight
-            diff = diff.transpose(0, 1)
+            result = self.org_weight.transpose(0, 1) * weight
+            result = result.transpose(0, 1)
         if shape is not None:
-            diff = diff.view(shape)
+            result = result.view(shape)
         if device is not None:
-            diff = diff.to(device)
-        return diff
+            result = result.to(device)
+        return result
 
     def get_diff_weight(self, multiplier=1, shape=None, device=None):
-        diff = self.make_weight(
+        return self.make_weight(
             multiplier=multiplier, shape=shape, device=device, diff=True
-        )
-        return diff, None
+        ), None
 
     def get_merged_weight(self, multiplier=1, shape=None, device=None):
-        diff = self.make_weight(multiplier=multiplier, shape=shape, device=device)
-        return diff, None
+        return self.make_weight(
+            multiplier=multiplier, shape=shape, device=device, diff=False
+        ), None
 
     def _bypass_forward(self, x, scale=1, diff=False):
         weight = self.weight * scale + int(not diff)
@@ -134,11 +136,8 @@ class IA3Module(LycorisBaseModule):
             return self.bypass_forward(x, self.multiplier)
         else:
             base = self.org_forward(x, *args, **kwargs)
-            merged_weight = self.get_merged_weight(multiplier=self.multiplier)[0]
-            base_weight = self._current_weight().to(x.device)
-            merged_weight = merged_weight.to(
-                base_weight.device, dtype=base_weight.dtype
-            )
-            delta_weight = merged_weight - base_weight
-            delta = self.op(x, delta_weight, None, **self.kw_dict)
+            diff_weight = self.make_weight(
+                multiplier=self.multiplier, device=x.device, diff=True
+            ).to(x.dtype)
+            delta = self.op(x, diff_weight, None, **self.kw_dict)
             return base + delta

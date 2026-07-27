@@ -147,6 +147,8 @@ class ButterflyOFTModule(LycorisBaseModule):
         return r
 
     def make_weight(self, scale=1, device=None, diff=False):
+        # NOTE: Computing the merged weight (diff=False) is faster than computing
+        # the diff weight, since diff=True requires an additional subtraction pass.
         m = self.boft_m
         b = self.boft_b
         r_b = b // 2

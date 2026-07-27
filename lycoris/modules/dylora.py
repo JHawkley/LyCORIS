@@ -94,7 +94,8 @@ class DyLoraModule(LycorisBaseModule):
         )
         return destination
 
-    def get_weight(self, rank):
+    def _get_weight_parts(self, rank):
+        """Internal helper: return (down, up, gamma) for the given rank."""
         b = math.ceil(rank / self.block_size)
         down = torch.concat(
             list(i.data for i in self.down_list[:b]) + list(self.down_list[b : (b + 1)])
@@ -105,37 +106,44 @@ class DyLoraModule(LycorisBaseModule):
         )
         return down, up, self.alpha / (b + 1)
 
-    def get_random_rank_weight(self):
-        b = random.randint(0, self.block_count - 1)
-        return self.get_weight(b * self.block_size)
+    def make_weight(self, rank, scale=1, device=None, diff=False):
+        # NOTE: Computing the diff weight (diff=True) is faster than computing
+        # the merged weight, since it avoids adding the original weight.
+        down, up, gamma = self._get_weight_parts(rank)
+        w = up @ (down * (gamma * scale))
+        if device is not None:
+            w = w.to(device)
+        w = w.view(self.shape)
+        if diff:
+            return w
+        return self.org_weight + w
 
     def get_diff_weight(self, multiplier=1, shape=None, device=None, rank=None):
         if rank is None:
-            down, up, scale = self.get_random_rank_weight()
-        else:
-            down, up, scale = self.get_weight(rank)
-        w = up @ (down * (scale * multiplier))
-        if device is not None:
-            w = w.to(device)
+            rank = random.randint(0, self.block_count - 1) * self.block_size
+        diff = self.make_weight(rank, scale=multiplier, device=device, diff=True)
         if shape is not None:
-            w = w.view(shape)
-        else:
-            w = w.view(self.shape)
-        return w, None
+            diff = diff.view(shape)
+        return diff, None
 
     def get_merged_weight(self, multiplier=1, shape=None, device=None, rank=None):
-        diff, _ = self.get_diff_weight(multiplier, shape, device, rank)
-        return diff + self.org_weight, None
+        if rank is None:
+            rank = random.randint(0, self.block_count - 1) * self.block_size
+        merged = self.make_weight(rank, scale=multiplier, device=device, diff=False)
+        if shape is not None:
+            merged = merged.view(shape)
+        return merged, None
 
     def bypass_forward_diff(self, x, scale=1, rank=None):
         if rank is None:
-            down, up, gamma = self.get_random_rank_weight()
+            down, up, gamma = self._get_weight_parts(
+                random.randint(0, self.block_count - 1) * self.block_size
+            )
         else:
-            down, up, scale = self.get_weight(rank)
+            down, up, gamma = self._get_weight_parts(rank)
         down = down.view(self.lora_dim, -1, *self.shape[2:])
         up = up.view(-1, self.lora_dim, *(1 for _ in self.shape[2:]))
-        scale = scale * gamma
-        return self.op(self.op(x, down, **self.kw_dict), up)
+        return self.op(self.op(x, down, **self.kw_dict), up) * gamma * scale
 
     def bypass_forward(self, x, scale=1, rank=None):
         return self.org_forward(x) + self.bypass_forward_diff(x, scale, rank)
@@ -148,10 +156,10 @@ class DyLoraModule(LycorisBaseModule):
             return self.bypass_forward(x, self.multiplier)
         else:
             base = self.org_forward(x, *args, **kwargs)
-            base_weight = self._current_weight().to(x.device)
-            merged_weight = self.get_merged_weight(multiplier=self.multiplier)[0].to(
-                base_weight.dtype
-            )
-            delta_weight = merged_weight - base_weight
-            delta = self.op(x, delta_weight, None, **self.kw_dict)
+            diff_weight = self.make_weight(
+                random.randint(0, self.block_count - 1) * self.block_size,
+                scale=self.multiplier,
+                diff=True,
+            ).to(x.dtype)
+            delta = self.op(x, diff_weight, None, **self.kw_dict)
             return base + delta
