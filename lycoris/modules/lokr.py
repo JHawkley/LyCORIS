@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base import LycorisBaseModule
+from .dropout import BatchRankDropout
 from ..functional import factorization, rebuild_tucker
 from ..functional.lokr import make_kron
 from ..logging import logger
@@ -235,6 +236,9 @@ class LokrModule(LycorisBaseModule):
         else:
             torch.nn.init.kaiming_uniform_(self.lokr_w1_a, a=math.sqrt(5))
             torch.nn.init.kaiming_uniform_(self.lokr_w1_b, a=math.sqrt(5))
+
+        if self.bypass_mode and self.rank_dropout > 0:
+            self.rank_drop = BatchRankDropout(self.rank_dropout, self.rank_dropout_scale)
 
     @classmethod
     def make_module_from_state_dict(

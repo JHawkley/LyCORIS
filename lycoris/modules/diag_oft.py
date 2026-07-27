@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base import LycorisBaseModule
+from .dropout import BatchRankDropout
 from ..functional import factorization
 from ..logging import logger
 
@@ -77,6 +78,13 @@ class DiagOFTModule(LycorisBaseModule):
         if rescaled:
             self.rescale = nn.Parameter(
                 torch.ones(out_dim, *(1 for _ in range(org_module.weight.dim() - 1)))
+            )
+
+        if self.bypass_mode and self.rank_dropout > 0:
+            self.rank_drop = BatchRankDropout(
+                self.rank_dropout,
+                self.rank_dropout_scale,
+                channel_dim=-1
             )
 
         log_oft_factorize(

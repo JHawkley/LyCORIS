@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base import LycorisBaseModule
+from .dropout import BatchRankDropout
 from ..functional import tucker_weight_from_conv
 
 
@@ -132,6 +133,9 @@ class GLoRAModule(LycorisBaseModule):
         else:
             torch.nn.init.zeros_(self.a2.weight)
             torch.nn.init.zeros_(self.b2.weight)
+
+        if self.bypass_mode and self.rank_dropout > 0:
+            self.rank_drop = BatchRankDropout(self.rank_dropout, self.rank_dropout_scale)
 
     @classmethod
     def make_module_from_state_dict(
