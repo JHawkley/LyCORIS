@@ -22,6 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base import LycorisBaseModule
+from .dropout import BatchRankDropout
 from ..logging import logger
 
 
@@ -237,6 +238,9 @@ class TLoraModule(LycorisBaseModule):
         alpha = lora_dim if alpha is None or alpha == 0 else alpha
         self.scale = alpha / lora_dim
         self.register_buffer("alpha", torch.tensor(alpha))
+
+        if self.bypass_mode and self.rank_dropout > 0:
+            self.rank_drop = BatchRankDropout(self.rank_dropout, self.rank_dropout_scale)
 
     def _initialize_from_svd(
         self,

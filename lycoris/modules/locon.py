@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base import LycorisBaseModule
+from .dropout import BatchRankDropout
 from ..functional.general import rebuild_tucker
 from ..logging import logger
 
@@ -143,6 +144,9 @@ class LoConModule(LycorisBaseModule):
             torch.nn.init.constant_(self.lora_up.weight, 0)
         if self.tucker:
             torch.nn.init.kaiming_uniform_(self.lora_mid.weight, a=math.sqrt(5))
+
+        if self.bypass_mode and self.rank_dropout > 0:
+            self.rank_drop = BatchRankDropout(self.rank_dropout, self.rank_dropout_scale)
 
     @classmethod
     def make_module_from_state_dict(

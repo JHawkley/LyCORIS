@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from .base import LycorisBaseModule
+from .dropout import BatchRankDropout
 from ..functional import power2factorization
 from ..logging import logger
 
@@ -97,6 +98,9 @@ class ButterflyOFTModule(LycorisBaseModule):
             self.rescale = nn.Parameter(
                 torch.ones(out_dim, *(1 for _ in range(org_module.weight.dim() - 1)))
             )
+
+        if self.bypass_mode and self.rank_dropout > 0:
+            self.rank_drop = BatchRankDropout(self.rank_dropout, self.rank_dropout_scale)
 
     @classmethod
     def algo_check(cls, state_dict, lora_name):
