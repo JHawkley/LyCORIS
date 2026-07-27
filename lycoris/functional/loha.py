@@ -161,5 +161,5 @@ def bypass_forward_diff(x, org_out, *weights, gamma=1.0, extra_args={}):
         torch.Tensor: output tensor
     """
     w1d, w1u, w2d, w2u, t1, t2 = weights
-    diff_w = diff_weight(w1d, w1u, w2d, w2u, t1, t2, gamma)
+    diff_w = diff_weight(w1d, w1u, w2d, w2u, t1, t2, gamma=gamma)
     return FUNC_LIST[w1d.dim() if t1 is None else t1.dim()](x, diff_w, **extra_args)

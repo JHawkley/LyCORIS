@@ -12,15 +12,19 @@ logger.setLevel(logging.ERROR)
 from test.module import LycorisModuleTests
 from test.wrapper import LycorisWrapperTests
 from test.functional import LycorisFunctionalTests
-from test.kohya import LycorisKohyaWrapperTests
 
 
 TESTS = [
     LycorisModuleTests,
     LycorisFunctionalTests,
     LycorisWrapperTests,
-    LycorisKohyaWrapperTests,
 ]
+
+try:
+    from test.kohya import LycorisKohyaWrapperTests
+    TESTS.append(LycorisKohyaWrapperTests)
+except Exception:
+    print("Skipping Kohya tests (Kohya SD-Scripts not available)")
 
 
 if __name__ == "__main__":

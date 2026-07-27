@@ -103,7 +103,15 @@ class FullModule(LycorisBaseModule):
 
     @org_weight.setter
     def org_weight(self, value):
-        self.org_module[0].weight.data.copy_(value)
+        self.org_module[0].weight = nn.Parameter(value)
+
+    def _current_weight(self):
+        return self._org_weight[0].detach()
+
+    def _current_bias(self):
+        if self.org_bias is not None:
+            return self.org_bias[0].detach()
+        return None
 
     def apply_to(self, **kwargs):
         self.org_forward = self.org_module[0].forward
@@ -171,13 +179,13 @@ class FullModule(LycorisBaseModule):
             if self.bias is not None:
                 diff_b = self.bias * multiplier
             return self.weight * multiplier, diff_b
-        org_weight = self.org_module[0].weight.to(device, dtype=self.weight.dtype)
+        org_weight = self.org_weight.to(device, dtype=self.weight.dtype)
         diff = self.weight.to(device) - org_weight
         diff_b = None
         if shape:
             diff = diff.view(shape)
         if self.bias is not None:
-            org_bias = self.org_module[0].bias.to(device, dtype=self.bias.dtype)
+            org_bias = self.org_bias[0].to(device, dtype=self.bias.dtype)
             diff_b = self.bias.to(device) - org_bias
         if device is not None:
             diff = diff.to(device)
@@ -203,9 +211,22 @@ class FullModule(LycorisBaseModule):
             and self.training
             and torch.rand(1) < self.module_dropout
         ):
-            return self.org_forward(x, *args, **kwargs)
+            base_weight = self._org_weight[0].to(x.device, x.dtype)
+            base_bias = (
+                self.org_bias[0].to(x.device, x.dtype)
+                if self.org_bias is not None
+                else None
+            )
+            return self.op(x, base_weight, base_bias, **self.kw_dict)
 
-        base = self.org_forward(x, *args, **kwargs)
+        base_weight_orig = self._org_weight[0].to(x.device, x.dtype)
+        base_bias_orig = (
+            self.org_bias[0].to(x.device, x.dtype)
+            if self.org_bias is not None
+            else None
+        )
+        base = self.op(x, base_weight_orig, base_bias_orig, **self.kw_dict)
+
         weight, bias = self.make_weight(self.multiplier, x.device)
 
         base_weight = self._current_weight().to(weight.device)

@@ -4,20 +4,24 @@ from parameterized import parameterized
 
 import torch
 
-from lycoris.kohya import (
-    LycorisNetworkKohya,
-    create_network,
-    create_network_from_weights,
-)
-from lycoris.utils import merge, extract_diff
+try:
+    from lycoris.kohya import (
+        LycorisNetworkKohya,
+        create_network,
+        create_network_from_weights,
+    )
+    from lycoris.utils import merge, extract_diff
 
-from library.model_util import (
-    load_models_from_stable_diffusion_checkpoint as load_sd,
-    load_file,
-)
-from library.sdxl_model_util import (
-    load_models_from_sdxl_checkpoint as load_sdxl,
-)
+    from library.model_util import (
+        load_models_from_stable_diffusion_checkpoint as load_sd,
+        load_file,
+    )
+    from library.sdxl_model_util import (
+        load_models_from_sdxl_checkpoint as load_sdxl,
+    )
+    KOHAYA_AVAILABLE = True
+except ImportError:
+    KOHAYA_AVAILABLE = False
 
 
 algos: list[str] = [
@@ -66,15 +70,19 @@ extract_param_list = list(
     )
 )
 
-device, dtype = device_and_dtype[0]
-sd_te1, sd_te2, vae, sdxl_unet, *_ = load_sdxl(
-    None, "./models/kohaku-xl-beta7.safetensors", "cpu", dtype
-)
+if KOHAYA_AVAILABLE:
+    device, dtype = device_and_dtype[0]
+    sd_te1, sd_te2, vae, sdxl_unet, *_ = load_sdxl(
+        None, "./models/kohaku-xl-beta7.safetensors", "cpu", dtype
+    )
 
 
+@unittest.skipIf(not KOHAYA_AVAILABLE, "Kohya SD-Scripts not available")
 class LycorisKohyaWrapperTests(unittest.TestCase):
     @parameterized.expand(wrapper_param_list)
     def test_wrapper(self, algo, device_dtype, wd, tucker, scalar):
+        if not KOHAYA_AVAILABLE:
+            self.skipTest("Kohya SD-Scripts not available")
         device, dtype = device_dtype
         print(
             f"{algo: <18}",
@@ -113,6 +121,8 @@ class LycorisKohyaWrapperTests(unittest.TestCase):
 
     @parameterized.expand(extract_param_list)
     def test_extract(self, device_dtype):
+        if not KOHAYA_AVAILABLE:
+            self.skipTest("Kohya SD-Scripts not available")
         device, dtype = device_dtype
         print(
             "Extract",

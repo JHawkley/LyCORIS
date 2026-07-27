@@ -93,7 +93,10 @@ class LycorisModuleTests(unittest.TestCase):
         ).to(device, dtype)
         net.apply_to()
 
-        with torch.autocast("cuda", dtype=dtype):
+        if device.type == "cuda":
+            with torch.autocast(device_type="cuda", dtype=dtype):
+                test_output = base(test_input)
+        else:
             test_output = base(test_input)
         torch.sum(test_output).backward()
         net.apply_max_norm(1.0)
@@ -139,7 +142,10 @@ class LycorisModuleTests(unittest.TestCase):
         ).to(device, dtype)
         net.apply_to()
 
-        with torch.autocast("cuda", dtype=dtype):
+        if device.type == "cuda":
+            with torch.autocast(device_type="cuda", dtype=dtype):
+                test_output = base(test_input)
+        else:
             test_output = base(test_input)
         torch.sum(test_output).backward()
         state_dict = net.state_dict()
@@ -177,7 +183,10 @@ class LycorisModuleTests(unittest.TestCase):
             use_scalar=scalar,
         ).to(device, dtype)
 
-        with torch.autocast("cuda", dtype=dtype):
+        if device.type == "cuda":
+            with torch.autocast(device_type="cuda", dtype=dtype):
+                test_output = base(test_input)
+        else:
             test_output = base(test_input)
         torch.sum(test_output).backward()
         state_dict = net.state_dict()
