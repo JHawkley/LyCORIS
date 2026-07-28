@@ -23,6 +23,7 @@ test*.py
 # Editors
 .vscode/
 .idea/
+.roo/
 
 # Vagrant
 .vagrant/
