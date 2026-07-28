@@ -104,35 +104,25 @@ class FullModule(LycorisBaseModule):
 
     @org_weight.setter
     def org_weight(self, value):
-        self.org_module[0].weight = nn.Parameter(value)
-
-    def _current_weight(self):
-        return self._org_weight[0].detach()
-
-    def _current_bias(self):
-        if self.org_bias is not None:
-            return self.org_bias[0].detach()
-        return None
+        self.org_module[0].weight.data.copy_(value)
 
     def apply_to(self, **kwargs):
         self.org_forward = self.org_module[0].forward
         self.org_module[0].forward = self.forward
         self.weight.data.add_(self.org_module[0].weight.data)
         self._org_weight = [self.org_module[0].weight.data.cpu().clone()]
-        delattr(self.org_module[0], "weight")
         if self.org_module[0].bias is not None:
             self.bias.data.add_(self.org_module[0].bias.data)
             self.org_bias = [self.org_module[0].bias.data.cpu().clone()]
-            delattr(self.org_module[0], "bias")
         else:
             self.org_bias = None
         self.is_diff = False
 
     def restore(self):
         self.org_module[0].forward = self.org_forward
-        self.org_module[0].weight = nn.Parameter(self._org_weight[0])
+        self.org_module[0].weight.data.copy_(self._org_weight[0].to(self.org_module[0].weight))
         if self.org_bias is not None:
-            self.org_module[0].bias = nn.Parameter(self.org_bias[0])
+            self.org_module[0].bias.data.copy_(self.org_bias[0].to(self.org_module[0].bias))
 
     def custom_state_dict(self):
         sd = {"diff": self.weight.data.cpu() - self._org_weight[0]}
@@ -162,9 +152,11 @@ class FullModule(LycorisBaseModule):
         diff_w, diff_b = self._compute_diff(scale, device)
         if diff:
             return diff_w, diff_b
-        weight = self.org_weight + diff_w
+        org_weight = self.org_weight.to(device=diff_w.device, dtype=diff_w.dtype)
+        weight = org_weight + diff_w
         if self.org_bias is not None and diff_b is not None:
-            bias = self.org_bias[0] + diff_b
+            org_bias = self.org_bias[0].to(device=diff_b.device, dtype=diff_b.dtype)
+            bias = org_bias + diff_b
         else:
             bias = None if self.org_bias is None else diff_b
         return weight, bias
@@ -177,11 +169,11 @@ class FullModule(LycorisBaseModule):
                 diff_b = self.bias * multiplier
             return self.weight * multiplier, diff_b
 
-        org_weight = self.org_weight.to(device, dtype=self.weight.dtype)
+        org_weight = self.org_module[0].weight.to(device, dtype=self.weight.dtype)
         diff = self.weight.to(device) - org_weight
         diff_b = None
         if self.bias is not None:
-            org_bias = self.org_bias[0].to(device, dtype=self.bias.dtype)
+            org_bias = self.org_module[0].bias.to(device, dtype=self.bias.dtype)
             diff_b = self.bias.to(device) - org_bias
         if multiplier != 1:
             diff = diff * multiplier
@@ -211,22 +203,9 @@ class FullModule(LycorisBaseModule):
             and self.training
             and torch.rand(1) < self.module_dropout
         ):
-            base_weight = self._org_weight[0].to(x.device, x.dtype)
-            base_bias = (
-                self.org_bias[0].to(x.device, x.dtype)
-                if self.org_bias is not None
-                else None
-            )
-            return self.op(x, base_weight, base_bias, **self.kw_dict)
+            return self.org_forward(x, *args, **kwargs)
 
-        base_weight_orig = self._org_weight[0].to(x.device, x.dtype)
-        base_bias_orig = (
-            self.org_bias[0].to(x.device, x.dtype)
-            if self.org_bias is not None
-            else None
-        )
-        base = self.op(x, base_weight_orig, base_bias_orig, **self.kw_dict)
-
+        base = self.org_forward(x, *args, **kwargs)
         delta_weight, delta_bias = self.make_weight(
             scale=self.multiplier, device=x.device, diff=True
         )

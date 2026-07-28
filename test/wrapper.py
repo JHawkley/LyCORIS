@@ -286,6 +286,118 @@ class LycorisWrapperTests(unittest.TestCase):
         finally:
             reset_globals()
 
+    def test_fullmodule_apply_and_stack(self):
+        """Exercise FullModule's specialized apply_to/forward/restore lifecycle,
+        including stacking with another wrapper (the use-case that commit ac2616f
+        was trying to enable).
+
+        FullModule starts as a no-op (zero diff), so we seed its weight with
+        random values to verify forward produces a different result than the base.
+        """
+        try:
+            reset_globals()
+            torch.manual_seed(0)
+
+            net = nn.Linear(4, 4)
+            data = torch.randn(2, 4)
+
+            # --- Solo FullModule lifecycle ---
+            base = net(data)
+
+            full_lyco = create_lycoris(
+                net,
+                multiplier=1.0,
+                linear_dim=4,
+                linear_alpha=1.0,
+                algo="full",
+            )
+            full_lyco.apply_to()
+
+            # Seed the FullModule weight so it actually produces a delta
+            with torch.no_grad():
+                for p in full_lyco.parameters():
+                    p.data = torch.randn_like(p) * 0.1
+
+            full_out = net(data)
+            self.assertFalse(
+                torch.allclose(base, full_out),
+                "FullModule with non-zero weight should modify output",
+            )
+
+            full_lyco.restore()
+            self.assertTrue(
+                torch.allclose(base, net(data), atol=1e-6),
+                "After restore, output should match original",
+            )
+
+            # --- FullModule + LoCon stacking ---
+            full_lyco.apply_to()
+            with torch.no_grad():
+                for p in full_lyco.parameters():
+                    p.data = torch.randn_like(p) * 0.1
+            full_out1 = net(data)
+            full_delta1 = full_out1 - base
+
+            lora_lyco = create_lycoris(
+                net,
+                multiplier=1.0,
+                linear_dim=2,
+                linear_alpha=1.0,
+                algo="lora",
+            )
+            lora_lyco.apply_to()
+            net(data)  # forward pass to verify it doesn't crash
+
+            # Pop Lora first
+            lora_lyco.restore()
+            after_pop_lora = net(data)
+            self.assertTrue(
+                torch.allclose(after_pop_lora, base + full_delta1, atol=1e-5),
+                "After popping Lora, only FullModule should remain",
+            )
+
+            # Pop FullModule
+            full_lyco.restore()
+            self.assertTrue(
+                torch.allclose(net(data), base, atol=1e-6),
+                "After popping FullModule as well, output should match original",
+            )
+
+            # --- Lora + FullModule stacking (reverse order) ---
+            torch.manual_seed(42)
+            lora_lyco2 = create_lycoris(
+                net,
+                multiplier=1.0,
+                linear_dim=2,
+                linear_alpha=1.0,
+                algo="loha",
+            )
+            lora_lyco2.apply_to()
+            lora_out = net(data)
+            lora_delta = lora_out - base
+            lora_lyco2.restore()
+
+            lora_lyco2.apply_to()
+            full_lyco.apply_to()
+            with torch.no_grad():
+                for p in full_lyco.parameters():
+                    p.data = torch.randn_like(p) * 0.1
+
+            full_lyco.restore()
+            after_pop_full = net(data)
+            self.assertTrue(
+                torch.allclose(after_pop_full, base + lora_delta, atol=1e-5),
+                "After popping FullModule, only Lora should remain",
+            )
+
+            lora_lyco2.restore()
+            self.assertTrue(
+                torch.allclose(net(data), base, atol=1e-6),
+                "After popping both, output should match original",
+            )
+        finally:
+            reset_globals()
+
     def test_lycoris_wrapper_regex_named_modules(
         self,
         device_dtype=(torch.device("cpu"), torch.float32),
