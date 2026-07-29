@@ -280,6 +280,17 @@ class LycorisBaseModule(ModuleCustomSD):
         return self.dtype_tensor.device
 
     @property
+    def dora_scale(self):
+        """Handle on the weight-decomposition magnitude parameter.
+
+        The parameter itself is owned by the child ``wd_module`` (see
+        ``weight_decompose.py``); this property preserves the historical
+        ``module.dora_scale`` access path for modules with weight
+        decomposition enabled.
+        """
+        return self.wd_module.dora_scale
+
+    @property
     def org_weight(self):
         return self.org_module[0].weight
 

@@ -4,6 +4,12 @@ import torch
 import torch.nn as nn
 
 from .base import LycorisBaseModule
+from .weight_decompose import (
+    WeightDecomposeOnInput,
+    WeightDecomposeOnOutput,
+    infer_wd_on_out,
+    remap_dora_scale_key,
+)
 from ..functional.loha import diff_weight as loha_diff_weight
 
 
@@ -100,27 +106,11 @@ class LohaModule(LycorisBaseModule):
 
         self.wd = weight_decompose
         self.wd_on_out = wd_on_out
-        if self.wd:
-            org_weight = org_module.weight.cpu().clone().float()
-            self.dora_norm_dims = org_weight.dim() - 1
-            if self.wd_on_out:
-                self.dora_scale = nn.Parameter(
-                    torch.norm(
-                        org_weight.reshape(org_weight.shape[0], -1),
-                        dim=1,
-                        keepdim=True,
-                    ).reshape(org_weight.shape[0], *[1] * self.dora_norm_dims)
-                ).float()
-            else:
-                self.dora_scale = nn.Parameter(
-                    torch.norm(
-                        org_weight.transpose(1, 0).reshape(org_weight.shape[1], -1),
-                        dim=1,
-                        keepdim=True,
-                    )
-                    .reshape(org_weight.shape[1], *[1] * self.dora_norm_dims)
-                    .transpose(1, 0)
-                ).float()
+        self.wd_module = (
+            None if not self.wd else
+            WeightDecomposeOnOutput(org_module.weight) if wd_on_out else
+            WeightDecomposeOnInput(org_module.weight)
+        )
 
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
@@ -162,6 +152,10 @@ class LohaModule(LycorisBaseModule):
             float(alpha),
             use_tucker=t1 is not None,
             weight_decompose=dora_scale is not None,
+            wd_on_out=(
+                dora_scale is None
+                or infer_wd_on_out(dora_scale, orig_module.weight)
+            ),
         )
         module.hada_w1_a.copy_(w1a)
         module.hada_w1_b.copy_(w1b)
@@ -173,6 +167,19 @@ class LohaModule(LycorisBaseModule):
         if dora_scale is not None:
             module.dora_scale.copy_(dora_scale)
         return module
+
+    def load_weight_prehook(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        if self.wd:
+            remap_dora_scale_key(state_dict, prefix)
 
     def load_weight_hook(self, module: nn.Module, incompatible_keys):
         missing_keys = incompatible_keys.missing_keys
@@ -249,7 +256,7 @@ class LohaModule(LycorisBaseModule):
     def get_merged_weight(self, multiplier=1.0, shape=None, device=None):
         if self.wd:
             merged = self.make_weight(scale=1, device=device, diff=False)
-            merged = self.apply_weight_decompose(merged, multiplier)
+            merged = self.wd_module(merged, multiplier)
         else:
             merged = self.make_weight(scale=multiplier, device=device, diff=False)
         if shape is not None:
@@ -257,27 +264,12 @@ class LohaModule(LycorisBaseModule):
         return merged, None
 
     def apply_weight_decompose(self, weight, multiplier=1):
-        weight = weight.to(self.dora_scale.dtype)
-        if self.wd_on_out:
-            weight_norm = (
-                weight.reshape(weight.shape[0], -1)
-                .norm(dim=1)
-                .reshape(weight.shape[0], *[1] * self.dora_norm_dims)
-            ) + torch.finfo(weight.dtype).eps
-        else:
-            weight_norm = (
-                weight.transpose(0, 1)
-                .reshape(weight.shape[1], -1)
-                .norm(dim=1, keepdim=True)
-                .reshape(weight.shape[1], *[1] * self.dora_norm_dims)
-                .transpose(0, 1)
-            ) + torch.finfo(weight.dtype).eps
+        """Backward-compatible alias for the weight-decomposition submodule.
 
-        scale = self.dora_scale.to(weight.device) / weight_norm
-        if multiplier != 1:
-            scale = multiplier * (scale - 1) + 1
-
-        return weight * scale
+        The decomposition logic now lives in ``self.wd_module``; see
+        ``lycoris/modules/weight_decompose.py``.
+        """
+        return self.wd_module(weight, multiplier)
 
     def custom_state_dict(self):
         destination = {}
@@ -330,7 +322,7 @@ class LohaModule(LycorisBaseModule):
         )
 
         if self.wd:
-            new_weight = self.apply_weight_decompose(
+            new_weight = self.wd_module(
                 base_weight + diff_weight, self.multiplier
             )
         else:
