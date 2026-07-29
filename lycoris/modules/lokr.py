@@ -7,6 +7,15 @@ import torch.nn.functional as F
 
 from .base import LycorisBaseModule
 from .dropout import BatchRankDropout
+from .weight_decompose import (
+    WeightDecomposeOnInput,
+    WeightDecomposeOnOutput,
+    infer_wd_on_out,
+    log_wd_mode_mismatch,
+    parse_weight_decompose,
+    pop_wd_for_diff_key,
+    remap_dora_scale_key,
+)
 from ..functional import factorization, rebuild_tucker
 from ..functional.lokr import make_kron
 from ..logging import logger
@@ -40,6 +49,7 @@ class LokrModule(LycorisBaseModule):
         "lokr_t2",
         "alpha",
         "dora_scale",
+        "wd_for_diff",
     ]
     weight_list_det = ["lokr_w1", "lokr_w1_a"]
 
@@ -173,29 +183,15 @@ class LokrModule(LycorisBaseModule):
                 self.use_w2 = True
                 self.lokr_w2 = nn.Parameter(torch.empty(shape[0][1], shape[1][1]))
 
-        self.wd = weight_decompose
+        self.wd, self.wd_for_diff = parse_weight_decompose(
+            weight_decompose, self.wd_auto_mode
+        )
         self.wd_on_out = wd_on_out
-        if self.wd:
-            org_weight = org_module.weight.cpu().clone().float()
-            self.dora_norm_dims = org_weight.dim() - 1
-            if self.wd_on_out:
-                self.dora_scale = nn.Parameter(
-                    torch.norm(
-                        org_weight.reshape(org_weight.shape[0], -1),
-                        dim=1,
-                        keepdim=True,
-                    ).reshape(org_weight.shape[0], *[1] * self.dora_norm_dims)
-                ).float()
-            else:
-                self.dora_scale = nn.Parameter(
-                    torch.norm(
-                        org_weight.transpose(1, 0).reshape(org_weight.shape[1], -1),
-                        dim=1,
-                        keepdim=True,
-                    )
-                    .reshape(org_weight.shape[1], *[1] * self.dora_norm_dims)
-                    .transpose(1, 0)
-                ).float()
+        self.wd_module = (
+            None if not self.wd else
+            WeightDecomposeOnOutput(org_module.weight, for_diff=self.wd_for_diff) if wd_on_out else
+            WeightDecomposeOnInput(org_module.weight, for_diff=self.wd_for_diff)
+        )
 
         if isinstance(alpha, torch.Tensor):
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
@@ -218,7 +214,7 @@ class LokrModule(LycorisBaseModule):
             self.register_buffer("scalar", torch.tensor(1.0), persistent=False)
 
         if self.use_w2:
-            if use_scalar:
+            if use_scalar or self.wd_for_diff:
                 torch.nn.init.kaiming_uniform_(self.lokr_w2, a=math.sqrt(5))
             else:
                 torch.nn.init.constant_(self.lokr_w2, 0)
@@ -226,10 +222,15 @@ class LokrModule(LycorisBaseModule):
             if self.tucker:
                 torch.nn.init.kaiming_uniform_(self.lokr_t2, a=math.sqrt(5))
             torch.nn.init.kaiming_uniform_(self.lokr_w2_a, a=math.sqrt(5))
-            if use_scalar:
+            if use_scalar or self.wd_for_diff:
                 torch.nn.init.kaiming_uniform_(self.lokr_w2_b, a=math.sqrt(5))
             else:
                 torch.nn.init.constant_(self.lokr_w2_b, 0)
+        # Diff-weight decomposition requires a non-zero initial diff: the
+        # decomposition normalizes the diff weight, which is undefined (and
+        # blocks gradients) when it is exactly zero.  Combined with the
+        # zero-initialized dora_scale the module still starts as an exact
+        # identity.
 
         if self.use_w1:
             torch.nn.init.kaiming_uniform_(self.lokr_w1, a=math.sqrt(5))
@@ -255,6 +256,7 @@ class LokrModule(LycorisBaseModule):
         t2,
         alpha,
         dora_scale,
+        wd_for_diff,
     ):
         full_matrix = False
         if w1a is not None:
@@ -319,7 +321,15 @@ class LokrModule(LycorisBaseModule):
             use_tucker=t2 is not None,
             decompose_both=w1 is None and w2 is None,
             factor=factor,
-            weight_decompose=dora_scale is not None,
+            weight_decompose=(
+                False if dora_scale is None
+                else "diff" if wd_for_diff is not None and bool(wd_for_diff)
+                else True
+            ),
+            wd_on_out=(
+                dora_scale is None
+                or infer_wd_on_out(dora_scale, orig_module.weight)
+            ),
             full_matrix=full_matrix,
         )
         if w1 is not None:
@@ -337,6 +347,22 @@ class LokrModule(LycorisBaseModule):
         if dora_scale is not None:
             module.dora_scale.copy_(dora_scale)
         return module
+
+    def load_weight_prehook(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        if self.wd:
+            remap_dora_scale_key(state_dict, prefix)
+            ckpt_for_diff = pop_wd_for_diff_key(state_dict, prefix)
+            if ckpt_for_diff != self.wd_for_diff:
+                log_wd_mode_mismatch(self.lora_name, ckpt_for_diff, self.wd_for_diff)
 
     def load_weight_hook(self, module: nn.Module, incompatible_keys):
         missing_keys = incompatible_keys.missing_keys
@@ -377,10 +403,15 @@ class LokrModule(LycorisBaseModule):
         return self.org_weight + weight
 
     def get_diff_weight(self, multiplier=1.0, shape=None, device=None):
-        if self.wd:
+        if self.wd and self.wd_for_diff:
+            # The decomposition targets the diff weight directly.
+            diff = self.make_weight(scale=1, device=device, diff=True)
+            diff = self.wd_module(diff, multiplier)
+        elif self.wd:
             # Weight decomposition affects the final weight, so the diff must be
             # computed from the fully decomposed merged weight.
-            merged, _ = self.get_merged_weight(multiplier=multiplier, device=device)
+            merged = self.make_weight(scale=1, device=device, diff=False)
+            merged = self.wd_module(merged, multiplier)
             org = self.org_weight.to(device, dtype=merged.dtype) if device else self.org_weight.to(dtype=merged.dtype)
             diff = merged - org
         else:
@@ -392,9 +423,16 @@ class LokrModule(LycorisBaseModule):
         return diff, None
 
     def get_merged_weight(self, multiplier=1.0, shape=None, device=None):
-        if self.wd:
+        if self.wd and self.wd_for_diff:
+            # The decomposition targets the diff weight directly; the merged
+            # weight is the original weight plus the decomposed diff.
+            diff = self.make_weight(scale=1, device=device, diff=True)
+            diff = self.wd_module(diff, multiplier)
+            org = self.org_weight.to(device, dtype=diff.dtype) if device else self.org_weight.to(dtype=diff.dtype)
+            merged = org + diff
+        elif self.wd:
             merged = self.make_weight(scale=1, device=device, diff=False)
-            merged = self.apply_weight_decompose(merged, multiplier)
+            merged = self.wd_module(merged, multiplier)
         else:
             merged = self.make_weight(scale=multiplier, device=device, diff=False)
         if shape is not None:
@@ -402,33 +440,23 @@ class LokrModule(LycorisBaseModule):
         return merged, None
 
     def apply_weight_decompose(self, weight, multiplier=1):
-        weight = weight.to(self.dora_scale.dtype)
-        if self.wd_on_out:
-            weight_norm = (
-                weight.reshape(weight.shape[0], -1)
-                .norm(dim=1)
-                .reshape(weight.shape[0], *[1] * self.dora_norm_dims)
-            ) + torch.finfo(weight.dtype).eps
-        else:
-            weight_norm = (
-                weight.transpose(0, 1)
-                .reshape(weight.shape[1], -1)
-                .norm(dim=1, keepdim=True)
-                .reshape(weight.shape[1], *[1] * self.dora_norm_dims)
-                .transpose(0, 1)
-            ) + torch.finfo(weight.dtype).eps
+        """Backward-compatible alias for the weight-decomposition submodule.
 
-        scale = self.dora_scale.to(weight.device) / weight_norm
-        if multiplier != 1:
-            scale = multiplier * (scale - 1) + 1
-
-        return weight * scale
+        The decomposition logic now lives in ``self.wd_module``; see
+        ``lycoris/modules/weight_decompose.py``.
+        """
+        return self.wd_module(weight, multiplier)
 
     def custom_state_dict(self):
         destination = {}
         destination["alpha"] = self.alpha
         if self.wd:
             destination["dora_scale"] = self.dora_scale
+            if self.wd_for_diff:
+                # Marker for third-party consumers: dora_scale decomposes the
+                # diff weight rather than the merged weight.  Omitted for
+                # merged mode so those checkpoints keep the historical format.
+                destination["wd_for_diff"] = torch.tensor(True)
         if self.use_w1:
             destination["lokr_w1"] = self.lokr_w1 * self.scalar
         else:
@@ -561,16 +589,20 @@ class LokrModule(LycorisBaseModule):
             base_weight.dtype
         )
 
-        if self.wd:
-            new_weight = self.apply_weight_decompose(
+        if self.wd and self.wd_for_diff:
+            # Decompose the diff weight directly, skipping the
+            # merge-decompose-subtract round trip through the base weight.
+            delta_weight = self.wd_module(diff_weight, self.multiplier)
+        elif self.wd:
+            new_weight = self.wd_module(
                 base_weight + diff_weight, self.multiplier
             )
+            delta_weight = new_weight - base_weight
         elif self.multiplier == 1:
-            new_weight = base_weight + diff_weight
+            delta_weight = diff_weight
         else:
-            new_weight = base_weight + diff_weight * self.multiplier
+            delta_weight = diff_weight * self.multiplier
 
-        delta_weight = new_weight - base_weight
         delta_weight = self.drop(delta_weight)
         delta_weight = self.rank_drop(delta_weight)
         delta = self.op(x, delta_weight, None, **self.kw_dict)

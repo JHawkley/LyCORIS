@@ -12,12 +12,14 @@ logger.setLevel(logging.ERROR)
 from test.module import LycorisModuleTests
 from test.wrapper import LycorisWrapperTests
 from test.functional import LycorisFunctionalTests
+from test.weight_decompose import WeightDecomposeTests
 
 
 TESTS = [
     LycorisModuleTests,
     LycorisFunctionalTests,
     LycorisWrapperTests,
+    WeightDecomposeTests,
 ]
 
 try:

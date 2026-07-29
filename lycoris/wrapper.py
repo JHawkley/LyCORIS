@@ -20,6 +20,7 @@ from .modules.diag_oft import DiagOFTModule
 from .modules.boft import ButterflyOFTModule
 from .modules.tlora import TLoraModule
 from .modules import get_module, make_module
+from .modules.weight_decompose import normalize_weight_decompose_arg
 
 from .config import PRESET
 from .config_sdk import VALID_PRESET_KEYS
@@ -77,7 +78,9 @@ def create_lycoris(
     train_norm = str_bool(kwargs.get("train_norm", False))
     constraint = float(kwargs.get("constraint", 0) or 0)
     rescaled = str_bool(kwargs.get("rescaled", False))
-    weight_decompose = str_bool(kwargs.get("dora_wd", False))
+    # dora_wd accepts booleans (merged-weight DoRA, the historical behavior)
+    # and the string modes "merged"/"diff"/"auto"/"none".
+    weight_decompose = normalize_weight_decompose_arg(kwargs.get("dora_wd", False))
     wd_on_output = str_bool(kwargs.get("wd_on_output", True))
     full_matrix = str_bool(kwargs.get("full_matrix", False))
     bypass_mode = str_bool(kwargs.get("bypass_mode", False))
@@ -90,8 +93,8 @@ def create_lycoris(
     if bypass_mode:
         logger.info("Bypass mode is enabled")
 
-    if weight_decompose:
-        logger.info("Weight decomposition is enabled")
+    if weight_decompose not in (False, "none"):
+        logger.info(f"Weight decomposition is enabled (mode: {weight_decompose})")
 
     if full_matrix:
         logger.info("Full matrix mode for LoKr is enabled")

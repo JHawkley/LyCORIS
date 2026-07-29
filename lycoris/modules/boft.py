@@ -48,6 +48,9 @@ class ButterflyOFTModule(LycorisBaseModule):
         "alpha",
     ]
     weight_list_det = ["oft_blocks"]
+    # make_weight produces the merged weight fastest (the diff requires an
+    # extra subtraction pass), so weight_decompose="auto" resolves to merged.
+    wd_auto_mode = "merged"
 
     def __init__(
         self,
