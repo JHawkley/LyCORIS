@@ -88,6 +88,18 @@ class LycorisBaseModule(ModuleCustomSD):
     weight_list = []
     weight_list_det = []
 
+    #: How ``weight_decompose="auto"`` resolves for this algorithm: the mode
+    #: whose ``make_weight`` output is cheaper to compute.  Algorithms whose
+    #: ``make_weight`` produces the diff weight fastest (LoCon/LoHa/LoKr)
+    #: resolve to ``"diff"``; algorithms that produce the merged weight
+    #: fastest (BOFT/Diag-OFT) resolve to ``"merged"``.
+    wd_auto_mode: str = "diff"
+
+    #: Defaults so modules without weight decomposition can be introspected
+    #: uniformly; the wd-capable modules overwrite them in ``__init__``.
+    wd: bool = False
+    wd_for_diff: bool = False
+
     def __init__(
         self,
         lora_name,

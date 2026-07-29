@@ -67,9 +67,26 @@ Arguments to put in `network_args` for kohya sd scripts
 
 ### Weight Decompose
 
-* Enabled with `dora_wd=True`
+* Set with `dora_wd=VALUE`
 * Valid for LoRA, LoHa, and LoKr
-* Enable the DoRA method for these algorithms.
+* Enable DoRA-style weight decomposition for these algorithms.
+* Accepted values:
+  * `True` or `merged`: decompose the merged weight (classic DoRA). The
+    `dora_scale` magnitude is initialized from the base weight norms and the
+    decomposition applies to `W + ΔW`.
+  * `diff`: decompose the diff weight instead. The decomposition applies
+    directly to `ΔW`, skipping the merge–decompose–subtract round trip through
+    the base weight, and `dora_scale` learns the magnitude of the update
+    itself (initialized to zero; the update direction is randomly initialized,
+    so the module still starts as an exact identity).
+  * `auto`: use whichever mode is cheaper for the algorithm's `make_weight`
+    (currently resolves to `diff` for LoRA, LoHa, and LoKr).
+  * `False` or `none`: disabled (default).
+* Combine with `wd_on_output=True/False` to choose whether the norm is computed
+  per output channel or per input channel (both work in merged and diff mode).
+* Checkpoints trained with `diff` contain a `wd_for_diff` marker entry per
+  module so consumers can tell which mode `dora_scale` belongs to; merged-mode
+  checkpoints keep the historical format unchanged.
 * Will force `bypass_mode=False`
 
 ### Bypass Mode

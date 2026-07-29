@@ -1,8 +1,7 @@
 """DoRA-style weight decomposition modules.
 
 These modules encapsulate the "magnitude" half of DoRA: a learnable per-slice
-scale (``dora_scale``), initialized from the norm of the original weight, which
-is reapplied to a renormalized weight tensor::
+scale (``dora_scale``) which is reapplied to a renormalized weight tensor::
 
     weight * (dora_scale / ||weight||)
 
@@ -20,20 +19,84 @@ Two variants exist, differing only in the dimension the norm is computed over:
 - ``WeightDecomposeOnInput``: norm over the input dimension (dim 1).
 
 A weight-decomposition module is intentionally agnostic about *which* tensor it
-rescales: algorithm modules currently pass the fully merged weight, but a diff
-weight can be passed instead (e.g. for decomposition modes that operate on the
-update itself).
+rescales: the algorithm module decides whether the decomposition applies to
+the merged weight (classic DoRA, ``weight_decompose=True``/``"merged"``) or to
+the diff weight (``weight_decompose="diff"``, which learns the magnitude of
+the update itself rather than of the adapted weight).  See
+``parse_weight_decompose`` for the accepted values of the ``weight_decompose``
+argument and how ``"auto"`` is resolved.
 """
 
 import torch
 import torch.nn as nn
 from torch import Tensor
 
+from ..logging import logger
+
 
 # Attribute name algorithm modules use to hold their weight-decomposition
 # submodule.  Centralized here so the state-dict remapping below cannot drift
 # out of sync with the attribute used by the algorithm modules.
 WD_MODULE_ATTR = "wd_module"
+
+#: State-dict key marking that ``dora_scale`` decomposes the diff weight rather
+#: than the merged weight.  Only written for diff-mode checkpoints so that
+#: merged-mode checkpoints stay byte-identical to the historical format.
+WD_FOR_DIFF_KEY = "wd_for_diff"
+
+#: String values accepted for the ``weight_decompose`` argument (besides
+#: booleans).  ``"merged"``/``"diff"`` select the decomposition target
+#: explicitly; ``"auto"`` defers to the algorithm's ``wd_auto_mode``;
+#: ``"none"`` disables decomposition.
+WD_STRING_MODES = ("merged", "diff", "auto", "none")
+
+
+def parse_weight_decompose(value, auto_mode="diff"):
+    """Resolve the mixed bool-or-str ``weight_decompose`` argument.
+
+    Args:
+        value: ``True``/``"merged"`` for classic (merged-weight) DoRA,
+            ``"diff"`` for diff-weight decomposition, ``"auto"`` to pick the
+            cheaper mode for the algorithm, or ``False``/``"none"``/``None``
+            to disable weight decomposition.
+        auto_mode: The mode ``"auto"`` resolves to.  Algorithms set this to
+            ``"merged"`` when their ``make_weight`` computes the merged weight
+            faster than the diff weight, and ``"diff"`` otherwise.
+
+    Returns:
+        tuple[bool, bool]: ``(enabled, for_diff)`` — whether decomposition is
+        active, and whether it targets the diff weight.
+    """
+    # ``in`` comparisons (==) rather than identity checks so that boolean-like
+    # values (numpy.bool_, 0/1, scalar tensors) behave like their Python bool.
+    if value is None or value in (False, "none"):
+        return False, False
+    if value in (True, "merged"):
+        return True, False
+    if value == "diff":
+        return True, True
+    if value == "auto":
+        if auto_mode not in ("merged", "diff"):
+            raise ValueError(f"Invalid weight-decomposition auto mode: {auto_mode!r}")
+        return True, auto_mode == "diff"
+    raise ValueError(
+        f"Invalid weight_decompose value: {value!r}; expected True, "
+        '"merged", "diff", "auto", False or "none".'
+    )
+
+
+def normalize_weight_decompose_arg(value):
+    """Normalize a user-facing ``weight_decompose``/``dora_wd`` argument.
+
+    Accepts booleans, boolean-like values and the string modes in
+    ``WD_STRING_MODES``.  Returns ``True``, ``False`` or one of the
+    lower-cased mode strings, ready to be forwarded to the algorithm
+    modules' ``weight_decompose`` parameter.
+    """
+    if isinstance(value, str) and value.lower() in WD_STRING_MODES:
+        return value.lower()
+    # Mirror lycoris.utils.str_bool for boolean-like values.
+    return str(value).lower() != "false"
 
 
 class WeightDecomposeBase(nn.Module):
@@ -49,17 +112,31 @@ class WeightDecomposeBase(nn.Module):
     #: introspection without an isinstance chain.
     on_output: bool = NotImplemented
 
-    def __init__(self, org_weight: Tensor) -> None:
-        """Initialize ``dora_scale`` from the original (frozen) weight.
+    def __init__(self, org_weight: Tensor, *, for_diff: bool = False) -> None:
+        """Initialize ``dora_scale``.
 
         Args:
             org_weight: The weight of the module being adapted.  Only its
                 values (at init time) and shape are used.
+            for_diff: Whether the decomposition targets the diff weight
+                rather than the merged weight.  Merged mode initializes the
+                magnitude from the norm of ``org_weight`` (so the adapted
+                weight starts as the base weight); diff mode initializes it
+                to zero (so the update starts with zero magnitude).
         """
         super().__init__()
         org_weight = org_weight.detach().cpu().clone().float()
         self.dora_norm_dims = org_weight.dim() - 1
-        self.dora_scale = nn.Parameter(self.init_scale(org_weight))
+        self.for_diff = for_diff
+        init = self.init_scale(org_weight)
+        if for_diff:
+            # The magnitude of the update is learned from scratch; starting
+            # at zero keeps the initial adapted weight equal to the base
+            # weight.  (The low-rank weights themselves are randomly
+            # initialized in diff mode so the normalized direction and the
+            # dora_scale gradients are well-defined.)
+            init = torch.zeros_like(init)
+        self.dora_scale = nn.Parameter(init)
 
     def init_scale(self, org_weight: Tensor) -> Tensor:
         """Compute the initial magnitude from the original weight.
@@ -90,7 +167,7 @@ class WeightDecomposeBase(nn.Module):
         return weight * scale
 
     def extra_repr(self) -> str:
-        return f"dora_norm_dims={self.dora_norm_dims}"
+        return f"dora_norm_dims={self.dora_norm_dims}, for_diff={self.for_diff}"
 
 
 class WeightDecomposeOnOutput(WeightDecomposeBase):
@@ -184,3 +261,31 @@ def remap_dora_scale_key(state_dict, prefix: str, attr_name: str = WD_MODULE_ATT
     new_key = f"{prefix}{attr_name}.dora_scale"
     if old_key in state_dict and new_key not in state_dict:
         state_dict[new_key] = state_dict.pop(old_key)
+
+
+def pop_wd_for_diff_key(state_dict, prefix: str) -> bool:
+    """Pop the ``wd_for_diff`` marker of a state dict, in place, and return
+    the mode it records.
+
+    The marker is only written for diff-mode checkpoints; an absent key means
+    the checkpoint uses merged-weight decomposition (the historical default).
+    Popping keeps strict ``load_state_dict`` round-trips working even though
+    the key has no corresponding registered parameter or buffer.
+    """
+    marker = state_dict.pop(f"{prefix}{WD_FOR_DIFF_KEY}", None)
+    return bool(marker) if marker is not None else False
+
+
+def log_wd_mode_mismatch(lora_name: str, ckpt_for_diff: bool, module_for_diff: bool) -> None:
+    """Warn that a checkpoint's decomposition mode differs from the module's.
+
+    The ``dora_scale`` values are loadable either way, but their meaning
+    (magnitude of the merged weight vs. magnitude of the diff weight) depends
+    on the mode, so a mismatch silently changes behavior without one.
+    """
+    logger.warning(
+        f"{lora_name}: checkpoint uses weight decomposition on the "
+        f"{'diff' if ckpt_for_diff else 'merged'} weight, but the module is "
+        f"configured for the {'diff' if module_for_diff else 'merged'} weight; "
+        "dora_scale will be interpreted with the module's mode."
+    )

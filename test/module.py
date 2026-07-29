@@ -39,7 +39,7 @@ base_module_and_input = [
 device_and_dtype = [
     (torch.device("cpu"), torch.float32),
 ]
-weight_decompose = [False, True]
+weight_decompose = [False, True, "diff"]
 use_tucker = [False, True]
 use_scalar = [False, True]
 

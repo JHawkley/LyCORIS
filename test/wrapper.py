@@ -73,6 +73,7 @@ device_and_dtype = [
 weight_decompose = [
     False,
     True,
+    "diff",
 ]
 use_tucker = [
     False,
