@@ -23,7 +23,6 @@ test*.py
 # Editors
 .vscode/
 .idea/
-.roo/
 
 # Vagrant
 .vagrant/
@@ -146,3 +145,7 @@ venv.bak/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+
+# AI supported IDEs
+.roo/
+AGENT/
