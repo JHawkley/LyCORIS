@@ -8,6 +8,7 @@ from parameterized import parameterized
 
 from lycoris.modules import (
     LycorisBaseModule,
+    ButterflyOFTModule,
     LoConModule,
     LohaModule,
     LokrModule,
@@ -28,6 +29,7 @@ wd_capable_modules = [
     LoConModule,
     LohaModule,
     LokrModule,
+    ButterflyOFTModule,
 ]
 # Deliberately non-square shapes so the on-input/on-output dora_scale shapes
 # are distinguishable (and the wd_on_out inference is actually exercised).
@@ -409,9 +411,10 @@ class DiffWeightDecomposeTests(unittest.TestCase):
         self.assertFalse(net2.wd_for_diff)
 
     @parameterized.expand(wd_capable_modules)
-    def test_auto_resolves_to_diff(self, module):
-        # All wd-capable algorithms in LyCORIS compute the diff weight faster
-        # than the merged weight, so "auto" resolves to diff mode.
+    def test_auto_resolves_by_algorithm(self, module):
+        # "auto" defers to the algorithm's wd_auto_mode — most algorithms
+        # compute the diff weight fastest ("diff"), but BOFT computes the
+        # merged weight fastest ("merged").
         net: LycorisBaseModule = module(
             "test",
             nn.Linear(16, 8),
@@ -420,8 +423,9 @@ class DiffWeightDecomposeTests(unittest.TestCase):
             alpha=1,
             weight_decompose="auto",
         )
+        expected_for_diff = net.wd_auto_mode == "diff"
         self.assertTrue(net.wd)
-        self.assertTrue(net.wd_for_diff)
+        self.assertEqual(net.wd_for_diff, expected_for_diff)
 
     @parameterized.expand(wd_capable_modules)
     def test_none_disables_decomposition(self, module):
