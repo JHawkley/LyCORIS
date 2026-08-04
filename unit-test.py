@@ -13,6 +13,7 @@ from test.module import LycorisModuleTests
 from test.wrapper import LycorisWrapperTests
 from test.functional import LycorisFunctionalTests
 from test.weight_decompose import WeightDecomposeTests
+from test.boft_factor import BoftFactorTests
 
 
 TESTS = [
@@ -20,6 +21,7 @@ TESTS = [
     LycorisFunctionalTests,
     LycorisWrapperTests,
     WeightDecomposeTests,
+    BoftFactorTests,
 ]
 
 try:

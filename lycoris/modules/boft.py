@@ -31,13 +31,69 @@ def log_butterfly_factorize(dim, factor, result):
     )
 
 
+@cache
+def log_butterfly_factor_search(dim, factor):
+    logger.warning(
+        f"BOFT factor {factor} cannot decompose dimension {dim}. "
+        "Searching for the next lowest factor that can. "
+        "The requested factor may not be used for all layers."
+    )
+
+
+@cache
+def log_butterfly_factor_not_found(dim, factor, next_factor):
+    msg = (
+        f"No BOFT factor at or below {factor} decomposes dimension {dim}, "
+        "so this layer cannot use BOFT."
+    )
+    if next_factor is not None:
+        msg += (
+            f" The next higher factor that would work is {next_factor}; "
+            "raise the BOFT factor to use it (this increases model size)."
+        )
+    logger.info(msg)
+
+
+def next_higher_factor(dimension: int, factor: int) -> int | None:
+    """Return the smallest BOFT factor strictly greater than ``factor`` that
+    decomposes ``dimension``, or ``None`` if none exists.
+
+    There is always one when ``dimension`` is even (``dimension`` itself is a
+    valid factor), and never one when ``dimension`` is odd.
+    """
+    candidate = factor + 2
+    while candidate <= dimension:
+        m, n = power2factorization(dimension, candidate)
+        if n != 0:
+            return m
+        candidate += 2
+    return None
+
+
 def butterfly_factor(dimension: int, factor: int = -1) -> tuple[int, int]:
+    requested = factor
     m, n = power2factorization(dimension, factor)
 
     if n == 0:
-        raise ValueError(
-            f"It is impossible to decompose {dimension} with factor {factor} under BOFT constraints."
-        )
+        # The requested factor cannot decompose this dimension; search for the
+        # next lowest factor that does.
+        log_butterfly_factor_search(dimension, requested)
+        candidate = factor - 2
+        while candidate >= 2:
+            m, n = power2factorization(dimension, candidate)
+            if n != 0:
+                factor = candidate
+                break
+            candidate -= 2
+        else:
+            # No factor at or below the requested one works. Surface the next
+            # higher factor that would, then fail as before.
+            log_butterfly_factor_not_found(
+                dimension, requested, next_higher_factor(dimension, requested)
+            )
+            raise ValueError(
+                f"It is impossible to decompose {dimension} with factor {requested} under BOFT constraints."
+            )
 
     log_butterfly_factorize(dimension, factor, (m, n))
     return m, n
